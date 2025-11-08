@@ -33,9 +33,9 @@ async def test_metadata_extraction():
     test_cases = [
         ("Author Name - Book Title.m4b", "Author Name", "Book Title"),
         ("Book Title by Author Name.mp3", "Author Name", "Book Title"),
-        ("Author.Name.-.Book.Title.flac", "Author.Name", "Book.Title"),  # Fixed: trailing dot is now stripped
-        ("Author-Name---Book-Title.mp3", "Author-Name", "Book-Title"),  # Multiple dashes
-        ("[Author Name] Book Title.m4b", "[Author Name]", "Book Title"),  # Bracket pattern
+        ("Author.Name.-.Book.Title.flac", "Author.Name", "Book.Title"),
+        ("Author-Name---Book-Title.mp3", "Author-Name", "Book-Title"),
+        ("[Author Name] Book Title.m4b", "[Author Name]", "Book Title"),
     ]
     
     for filename, expected_author, expected_title in test_cases:
@@ -83,9 +83,15 @@ async def test_filesystem_safe_names():
     
     test_cases = [
         ("Author/Name", "Author_Name"),  # Slash replaced
-        ("Author:Name", "Author:Name"),  # Colon allowed
+        ("Author:Name", "Author_Name"),  # Colon replaced (fixed test expectation)
         ("Author.Name.", "Author.Name"),  # Trailing dot removed
         ("  Author Name  ", "Author Name"),  # Spaces trimmed
+        ("Author<Name", "Author_Name"),   # Less than replaced
+        ('Author"Name', "Author_Name"),   # Double quote replaced
+        ("Author\\Name", "Author_Name"),  # Backslash replaced
+        ("Author|Name", "Author_Name"),   # Pipe replaced
+        ("Author?Name", "Author_Name"),   # Question mark replaced
+        ("Author*Name", "Author_Name"),   # Asterisk replaced
     ]
     
     for input_name, expected_output in test_cases:
