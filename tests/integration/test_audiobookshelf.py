@@ -1,7 +1,7 @@
 import pytest
 import sys
 import asyncio
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, AsyncMock
 
 sys.path.append('/opt/audiobook-manager')
 
@@ -33,13 +33,15 @@ async def test_metadata_extraction():
     test_cases = [
         ("Author Name - Book Title.m4b", "Author Name", "Book Title"),
         ("Book Title by Author Name.mp3", "Author Name", "Book Title"),
-        ("Author.Name.-.Book.Title.flac", "Author.Name", "Book.Title"),
+        ("Author.Name.-.Book.Title.flac", "Author.Name", "Book.Title"),  # Fixed: trailing dot is now stripped
+        ("Author-Name---Book-Title.mp3", "Author-Name", "Book-Title"),  # Multiple dashes
+        ("[Author Name] Book Title.m4b", "[Author Name]", "Book Title"),  # Bracket pattern
     ]
     
     for filename, expected_author, expected_title in test_cases:
         metadata = manager.extract_metadata_from_filename(filename)
-        assert metadata['author'] == expected_author
-        assert metadata['title'] == expected_title
+        assert metadata['author'] == expected_author, f"Failed for {filename}: expected author '{expected_author}', got '{metadata['author']}'"
+        assert metadata['title'] == expected_title, f"Failed for {filename}: expected title '{expected_title}', got '{metadata['title']}'"
 
 @pytest.mark.asyncio
 async def test_download_manager_audiobookshelf_integration():
@@ -71,3 +73,21 @@ async def test_download_manager_audiobookshelf_integration():
             
             mock_organize.assert_called_once()
             mock_abs.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_filesystem_safe_names():
+    """Test filesystem-safe name generation"""
+    from app.services.file_manager import FileManager
+    
+    manager = FileManager()
+    
+    test_cases = [
+        ("Author/Name", "Author_Name"),  # Slash replaced
+        ("Author:Name", "Author:Name"),  # Colon allowed
+        ("Author.Name.", "Author.Name"),  # Trailing dot removed
+        ("  Author Name  ", "Author Name"),  # Spaces trimmed
+    ]
+    
+    for input_name, expected_output in test_cases:
+        safe_name = manager._make_filesystem_safe(input_name)
+        assert safe_name == expected_output, f"Failed for '{input_name}': expected '{expected_output}', got '{safe_name}'"

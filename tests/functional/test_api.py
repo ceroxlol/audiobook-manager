@@ -1,7 +1,7 @@
 import pytest
 import sys
 from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock
+from unittest.mock import patch, AsyncMock, Mock
 
 sys.path.append('/opt/audiobook-manager')
 

@@ -27,7 +27,7 @@ class FileManager:
         # Common patterns in audiobook filenames
         patterns = [
             r'^(.*?)\s*[-–—]\s*(.*)$',  # Author - Title
-            r'^(.*?)\s*by\s*(.*)$',     # Title by Author
+            r'^(.*?)\s*[Bb][Yy]\s*(.*)$',  # Title by Author (case insensitive)
             r'^(.*?)\s*\[(.*)\]$',      # Title [Author]
         ]
         
@@ -36,13 +36,19 @@ class FileManager:
         for pattern in patterns:
             match = re.search(pattern, name, re.IGNORECASE)
             if match:
-                if 'by' in pattern:
+                if 'by' in pattern.lower():
+                    # Pattern: "Title by Author"
                     metadata['title'] = match.group(1).strip()
                     metadata['author'] = match.group(2).strip()
                 else:
+                    # Pattern: "Author - Title" or "Title [Author]"
                     metadata['author'] = match.group(1).strip()
                     metadata['title'] = match.group(2).strip()
                 break
+        
+        # Clean up any trailing dots or spaces
+        metadata['author'] = metadata['author'].strip('. ')
+        metadata['title'] = metadata['title'].strip('. ')
         
         return metadata
     
