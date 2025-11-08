@@ -29,8 +29,8 @@ class FileManager:
         # Try "Title by Author" pattern first (most specific)
         by_match = re.search(r'^(.*?)\s+by\s+(.*)$', name, re.IGNORECASE)
         if by_match:
-            metadata['title'] = by_match.group(1).strip()
-            metadata['author'] = by_match.group(2).strip()
+            metadata['title'] = match.group(1).strip()
+            metadata['author'] = match.group(2).strip()
             return metadata
         
         # Try bracket pattern
@@ -41,25 +41,11 @@ class FileManager:
             return metadata
         
         # Try dash pattern - look for a dash separator that likely separates author and title
-        # This pattern tries to find a dash that has reasonable content on both sides
         dash_pattern = r'^(.+?)\s*[-–—]{1,}\s*(.+)$'
         dash_match = re.search(dash_pattern, name)
         if dash_match:
             author_candidate = dash_match.group(1).strip()
             title_candidate = dash_match.group(2).strip()
-            
-            # If author candidate contains dashes, try to find the last dash as separator
-            if '-' in author_candidate and not title_candidate.startswith('-'):
-                # Split on dashes and try different combinations
-                parts = author_candidate.split('-')
-                # Try using the last dash as separator
-                if len(parts) > 1:
-                    author = '-'.join(parts[:-1]).strip()
-                    title = parts[-1].strip() + ' ' + title_candidate
-                    if len(author) > 2 and len(title) > 2:
-                        metadata['author'] = author
-                        metadata['title'] = title
-                        return metadata
             
             # Basic validation: both parts should have reasonable length
             if len(author_candidate) > 2 and len(title_candidate) > 2:
@@ -67,9 +53,9 @@ class FileManager:
                 metadata['title'] = title_candidate
                 return metadata
         
-        # Clean up any trailing dots or spaces
-        metadata['author'] = metadata['author'].strip('. ')
-        metadata['title'] = metadata['title'].strip('. ')
+        # Clean up any trailing dots or spaces - do this more thoroughly
+        metadata['author'] = metadata['author'].strip().strip('.')
+        metadata['title'] = metadata['title'].strip().strip('.')
         
         return metadata
     
