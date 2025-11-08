@@ -11,6 +11,9 @@ from ..services.prowlarr import prowlarr_client
 from ..services.qbittorrent import qbittorrent_client
 from ..services.audiobookshelf import audiobookshelf_client
 from ..services.download_manager import download_manager
+from ..system_monitor import SystemMonitor
+from ..backup_manager import BackupManager
+from ..config_validator import ConfigValidator
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -243,3 +246,62 @@ async def scan_audiobookshelf_library(library_id: str):
     except Exception as e:
         logger.error(f"Failed to scan library {library_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to scan library: {str(e)}")
+    
+@router.get("/system/stats")
+async def get_system_stats():
+    """Get system statistics"""
+    try:
+        stats = await SystemMonitor.get_system_stats()
+        return stats
+    except Exception as e:
+        logger.error(f"Failed to get system stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get system statistics")
+
+@router.post("/system/backup")
+async def create_backup(background_tasks: BackgroundTasks):
+    """Create a system backup"""
+    try:
+        backup_manager = BackupManager()
+        background_tasks.add_task(backup_manager.create_backup)
+        return {"message": "Backup started in background"}
+    except Exception as e:
+        logger.error(f"Backup failed: {e}")
+        raise HTTPException(status_code=500, detail="Backup failed")
+
+@router.get("/system/health")
+async def get_system_health():
+    """Comprehensive system health check"""
+    try:
+        # Validate configuration
+        config_valid = ConfigValidator.validate()
+        
+        # Check external services
+        service_status = await ConfigValidator.check_external_services()
+        
+        # Check disk space
+        disk_ok = await SystemMonitor.check_disk_space()
+        
+        # Get system stats
+        system_stats = await SystemMonitor.get_system_stats()
+        
+        overall_health = (
+            config_valid and 
+            all(service_status.values()) and 
+            disk_ok and
+            system_stats.get('disk_percent', 100) < 90
+        )
+        
+        return {
+            "healthy": overall_health,
+            "config_valid": config_valid,
+            "services": service_status,
+            "disk_ok": disk_ok,
+            "system_stats": system_stats
+        }
+        
+    except Exception as e:
+        logger.error(f"Health check failed: {e}")
+        return {
+            "healthy": False,
+            "error": str(e)
+        }
