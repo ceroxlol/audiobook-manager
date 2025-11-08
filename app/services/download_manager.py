@@ -7,6 +7,8 @@ import os
 
 from .qbittorrent import qbittorrent_client
 from .prowlarr import prowlarr_client
+from .audiobookshelf import audiobookshelf_client
+from .file_manager import FileManager
 from ..models import DownloadJob, SearchResult
 from ..database import get_db
 
@@ -16,6 +18,7 @@ class DownloadManager:
     def __init__(self):
         self.active_downloads: Dict[str, asyncio.Task] = {}
         self.monitoring_tasks: Dict[str, asyncio.Task] = {}
+        self.file_manager = FileManager()
     
     async def start_download(self, 
                            search_result_id: int, 
@@ -63,8 +66,6 @@ class DownloadManager:
                 db.commit()
                 return download_job
             
-            # Get the torrent hash (we'll need to monitor it)
-            # Note: This is tricky with qBittorrent API. We'll monitor by checking all torrents.
             download_job.status = "downloading"
             db.commit()
             
@@ -91,7 +92,7 @@ class DownloadManager:
         self.monitoring_tasks[job_id] = task
     
     async def _monitor_download(self, job_id: int, db: Session):
-        """Monitor download progress"""
+        """Monitor download progress and handle completion"""
         logger.info(f"Started monitoring download job {job_id}")
         
         try:
@@ -107,7 +108,7 @@ class DownloadManager:
             
             # We'll check for the torrent by looking for our tag
             target_tag = f"audiobook-manager-{job_id}"
-            max_attempts = 120  # 10 minutes (5 second intervals)
+            max_attempts = 600  # 50 minutes (5 second intervals)
             attempts = 0
             
             while attempts < max_attempts:
@@ -141,12 +142,13 @@ class DownloadManager:
                         state = torrent.get('state', '')
                         
                         if progress >= 100:
-                            download_job.status = "completed"
-                            download_job.completed_at = time.time()
-                            download_job.download_path = torrent.get('content_path', '')
-                            db.commit()
-                            logger.info(f"Download completed for job {job_id}")
+                            # Download completed - process the audiobook
+                            download_path = torrent.get('content_path', '')
+                            download_job.download_path = download_path
+                            
+                            await self._process_completed_download(download_job, search_result, db)
                             break
+                            
                         elif state in ['error', 'missingFiles', 'pausedUP']:
                             download_job.status = "failed"
                             download_job.error_message = f"Torrent state: {state}"
@@ -159,7 +161,7 @@ class DownloadManager:
                     
                     else:
                         # Torrent not found yet, might need more time
-                        if attempts > 20:  # After 100 seconds
+                        if attempts > 60:  # After 5 minutes
                             download_job.status = "failed"
                             download_job.error_message = "Torrent not found in qBittorrent after timeout"
                             db.commit()
@@ -180,6 +182,97 @@ class DownloadManager:
             logger.error(f"Monitoring task failed for job {job_id}: {e}")
             if job_id in self.monitoring_tasks:
                 del self.monitoring_tasks[job_id]
+
+    async def _process_completed_download(self, 
+                                        download_job: DownloadJob, 
+                                        search_result: SearchResult, 
+                                        db: Session):
+        """Process a completed download - organize and add to Audiobookshelf"""
+        try:
+            download_job.status = "processing"
+            db.commit()
+            
+            logger.info(f"Processing completed download: {search_result.title}")
+            
+            # Organize the downloaded files
+            organization_result = await self.file_manager.organize_downloaded_audiobook(
+                download_job.download_path
+            )
+            
+            if not organization_result:
+                download_job.status = "failed"
+                download_job.error_message = "Failed to organize downloaded files"
+                db.commit()
+                return
+            
+            # Add to Audiobookshelf
+            abs_success = await self._add_to_audiobookshelf(organization_result, search_result)
+            
+            if abs_success:
+                download_job.status = "completed"
+                download_job.completed_at = time.time()
+                logger.info(f"Successfully processed download: {search_result.title}")
+                
+                # Cleanup download files
+                await self.file_manager.cleanup_download(download_job.download_path)
+                
+            else:
+                download_job.status = "completed_with_warning"
+                download_job.error_message = "Download completed but failed to add to Audiobookshelf"
+                logger.warning(f"Download completed but Audiobookshelf integration failed: {search_result.title}")
+            
+            db.commit()
+            
+        except Exception as e:
+            logger.error(f"Failed to process completed download {download_job.id}: {e}")
+            download_job.status = "failed"
+            download_job.error_message = f"Processing failed: {str(e)}"
+            db.commit()
+    
+    async def _add_to_audiobookshelf(self, 
+                                   organization_result: Dict[str, Any], 
+                                   search_result: SearchResult) -> bool:
+        """Add organized audiobook to Audiobookshelf"""
+        try:
+            # Get libraries
+            libraries = await audiobookshelf_client.get_libraries()
+            if not libraries:
+                logger.error("No libraries found in Audiobookshelf")
+                return False
+            
+            # Use the first library (you might want to make this configurable)
+            library = libraries[0]
+            
+            # Check if audiobook already exists
+            existing = await audiobookshelf_client.find_audiobook_by_title(
+                organization_result['title'],
+                organization_result['author']
+            )
+            
+            if existing:
+                logger.info(f"Audiobook already exists in library: {organization_result['title']}")
+                return True
+            
+            # Add to library
+            result = await audiobookshelf_client.add_item_to_library(
+                library_id=library['id'],
+                folder_path=organization_result['library_path'],
+                title=organization_result['title'],
+                author=organization_result['author']
+            )
+            
+            if result:
+                # Trigger library scan
+                await audiobookshelf_client.scan_library(library['id'])
+                logger.info(f"Successfully added to Audiobookshelf: {organization_result['title']}")
+                return True
+            else:
+                logger.error(f"Failed to add to Audiobookshelf: {organization_result['title']}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Audiobookshelf integration failed: {e}")
+            return False
     
     async def get_download_status(self, job_id: int, db: Session) -> Optional[Dict[str, Any]]:
         """Get detailed download status"""

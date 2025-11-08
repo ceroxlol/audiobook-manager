@@ -590,8 +590,16 @@
                 if (data.integrations.qbittorrent.connected) integrations.push('qBittorrent: ✅');
                 else integrations.push('qBittorrent: ❌');
                 
+                if (data.integrations.audiobookshelf.connected) integrations.push('Audiobookshelf: ✅');
+                else integrations.push('Audiobookshelf: ❌');
+                
                 if (integrations.length > 0) {
                     statusDiv.textContent += ' | ' + integrations.join(' | ');
+                    
+                    // Add library info if available
+                    if (data.integrations.audiobookshelf.libraries > 0) {
+                        statusDiv.textContent += ` | Libraries: ${data.integrations.audiobookshelf.library_names.join(', ')}`;
+                    }
                 }
                 
             } catch (error) {

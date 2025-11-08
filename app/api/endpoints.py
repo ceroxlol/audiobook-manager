@@ -9,6 +9,7 @@ from ..models import SearchResult, DownloadJob
 from ..services.search import search_service
 from ..services.prowlarr import prowlarr_client
 from ..services.qbittorrent import qbittorrent_client
+from ..services.audiobookshelf import audiobookshelf_client
 from ..services.download_manager import download_manager
 
 router = APIRouter()
@@ -173,14 +174,19 @@ async def get_system_status():
         # Test connections
         prowlarr_connected = await prowlarr_client.test_connection()
         qbittorrent_connected = await qbittorrent_client.test_connection()
+        audiobookshelf_connected = await audiobookshelf_client.test_connection()
         
-        # Get download speed if connected
+        # Get additional info
         download_speed = 0
         if qbittorrent_connected:
             download_speed = await qbittorrent_client.get_download_speed()
         
+        libraries = []
+        if audiobookshelf_connected:
+            libraries = await audiobookshelf_client.get_libraries()
+        
         status = "operational"
-        if not prowlarr_connected or not qbittorrent_connected:
+        if not all([prowlarr_connected, qbittorrent_connected, audiobookshelf_connected]):
             status = "degraded"
         
         return {
@@ -196,8 +202,10 @@ async def get_system_status():
                     "download_speed": download_speed
                 },
                 "audiobookshelf": {
-                    "connected": False,  # Will implement in Phase 4
-                    "status": "pending"
+                    "connected": audiobookshelf_connected,
+                    "status": "connected" if audiobookshelf_connected else "disconnected",
+                    "libraries": len(libraries),
+                    "library_names": [lib.get('name', 'Unknown') for lib in libraries]
                 }
             }
         }
@@ -208,6 +216,30 @@ async def get_system_status():
             "integrations": {
                 "prowlarr": {"connected": False, "status": "error"},
                 "qbittorrent": {"connected": False, "status": "error"},
-                "audiobookshelf": {"connected": False, "status": "pending"}
+                "audiobookshelf": {"connected": False, "status": "error"}
             }
         }
+
+# Add new endpoint for Audiobookshelf operations
+@router.get("/audiobookshelf/libraries")
+async def get_audiobookshelf_libraries():
+    """Get Audiobookshelf libraries"""
+    try:
+        libraries = await audiobookshelf_client.get_libraries()
+        return {"libraries": libraries}
+    except Exception as e:
+        logger.error(f"Failed to get Audiobookshelf libraries: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get libraries: {str(e)}")
+
+@router.post("/audiobookshelf/scan/{library_id}")
+async def scan_audiobookshelf_library(library_id: str):
+    """Trigger Audiobookshelf library scan"""
+    try:
+        success = await audiobookshelf_client.scan_library(library_id)
+        if success:
+            return {"message": f"Library {library_id} scan triggered"}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to trigger library scan")
+    except Exception as e:
+        logger.error(f"Failed to scan library {library_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to scan library: {str(e)}")
