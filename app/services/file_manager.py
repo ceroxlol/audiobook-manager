@@ -29,8 +29,8 @@ class FileManager:
         # Try "Title by Author" pattern first (most specific)
         by_match = re.search(r'^(.*?)\s+by\s+(.*)$', name, re.IGNORECASE)
         if by_match:
-            metadata['title'] = match.group(1).strip()
-            metadata['author'] = match.group(2).strip()
+            metadata['title'] = by_match.group(1).strip()  # Fixed: by_match instead of match
+            metadata['author'] = by_match.group(2).strip()  # Fixed: by_match instead of match
             return metadata
         
         # Try bracket pattern
