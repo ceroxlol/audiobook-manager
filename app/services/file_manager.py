@@ -24,11 +24,14 @@ class FileManager:
         # Remove file extension
         name = os.path.splitext(filename)[0]
         
-        # Common patterns in audiobook filenames
+        # Common patterns in audiobook filenames - ordered by specificity
         patterns = [
-            (r'^(.*?)\s*[-–—]\s*(.*)$', 'dash'),  # Author - Title
-            (r'^(.*?)\s*[Bb][Yy]\s*(.*)$', 'by'),  # Title by Author (case insensitive)
-            (r'^(.*?)\s*\[(.*)\]$', 'brackets'),   # Title [Author]
+            # Pattern: "Title by Author" (most specific - case insensitive)
+            (r'^(.*?)\s+[Bb][Yy]\s+(.*)$', 'by'),
+            # Pattern: "Author - Title" with multiple dashes (handle hyphens in names)
+            (r'^([^-]+?)\s*[-–—]+\s*(.*)$', 'dash'),
+            # Pattern: "Title [Author]" 
+            (r'^(.*?)\s*\[(.*)\]$', 'brackets'),
         ]
         
         metadata = {'author': 'Unknown Author', 'title': name}
