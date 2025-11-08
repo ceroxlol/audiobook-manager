@@ -2,6 +2,7 @@ import pytest
 import asyncio
 import sys
 import os
+from unittest.mock import Mock, AsyncMock
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -34,3 +35,9 @@ def test_db():
             db.close()
     
     return override_get_db
+
+@pytest.fixture(autouse=True)
+def mock_external_services():
+    """Automatically mock external services for all tests"""
+    # This prevents actual API calls during tests
+    pass

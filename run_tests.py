@@ -52,6 +52,11 @@ def main():
         "cd /opt/audiobook-manager && python -m pytest tests/integration/test_download.py -v",
         "Phase 3: Download Integration Tests"
     )
+
+    phase4_success = run_command(
+    "cd /opt/audiobook-manager && python -m pytest tests/integration/test_audiobookshelf.py -v",
+    "Phase 4: Audiobookshelf Integration Tests"
+)
     
     # Functional Tests
     functional_success = run_command(
@@ -80,6 +85,7 @@ def main():
         ("Foundation", phase1_success),
         ("Search Integration", phase2_success),
         ("Download Integration", phase3_success),
+        ("Audiobookshelf Integration", phase4_success),  # Add this line
         ("Functional API", functional_success),
         ("Service Health", health_success),
         ("API Status", api_success)
