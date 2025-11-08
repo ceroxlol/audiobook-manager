@@ -24,30 +24,48 @@ class FileManager:
         # Remove file extension
         name = os.path.splitext(filename)[0]
         
-        # Common patterns in audiobook filenames - ordered by specificity
-        patterns = [
-            # Pattern: "Title by Author" (most specific - case insensitive)
-            (r'^(.*?)\s+[Bb][Yy]\s+(.*)$', 'by'),
-            # Pattern: "Author - Title" with multiple dashes (handle hyphens in names)
-            (r'^([^-]+?)\s*[-–—]+\s*(.*)$', 'dash'),
-            # Pattern: "Title [Author]" 
-            (r'^(.*?)\s*\[(.*)\]$', 'brackets'),
-        ]
-        
         metadata = {'author': 'Unknown Author', 'title': name}
         
-        for pattern, pattern_type in patterns:
-            match = re.search(pattern, name)
-            if match:
-                if pattern_type == 'by':
-                    # Pattern: "Title by Author"
-                    metadata['title'] = match.group(1).strip()
-                    metadata['author'] = match.group(2).strip()
-                else:
-                    # Pattern: "Author - Title" or "Title [Author]"
-                    metadata['author'] = match.group(1).strip()
-                    metadata['title'] = match.group(2).strip()
-                break
+        # Try "Title by Author" pattern first (most specific)
+        by_match = re.search(r'^(.*?)\s+by\s+(.*)$', name, re.IGNORECASE)
+        if by_match:
+            metadata['title'] = by_match.group(1).strip()
+            metadata['author'] = by_match.group(2).strip()
+            return metadata
+        
+        # Try bracket pattern
+        bracket_match = re.search(r'^(.*?)\s*\[(.*)\]$', name)
+        if bracket_match:
+            metadata['title'] = bracket_match.group(1).strip()
+            metadata['author'] = bracket_match.group(2).strip()
+            return metadata
+        
+        # Try dash pattern - look for a dash separator that likely separates author and title
+        # This pattern tries to find a dash that has reasonable content on both sides
+        dash_pattern = r'^(.+?)\s*[-–—]{1,}\s*(.+)$'
+        dash_match = re.search(dash_pattern, name)
+        if dash_match:
+            author_candidate = dash_match.group(1).strip()
+            title_candidate = dash_match.group(2).strip()
+            
+            # If author candidate contains dashes, try to find the last dash as separator
+            if '-' in author_candidate and not title_candidate.startswith('-'):
+                # Split on dashes and try different combinations
+                parts = author_candidate.split('-')
+                # Try using the last dash as separator
+                if len(parts) > 1:
+                    author = '-'.join(parts[:-1]).strip()
+                    title = parts[-1].strip() + ' ' + title_candidate
+                    if len(author) > 2 and len(title) > 2:
+                        metadata['author'] = author
+                        metadata['title'] = title
+                        return metadata
+            
+            # Basic validation: both parts should have reasonable length
+            if len(author_candidate) > 2 and len(title_candidate) > 2:
+                metadata['author'] = author_candidate
+                metadata['title'] = title_candidate
+                return metadata
         
         # Clean up any trailing dots or spaces
         metadata['author'] = metadata['author'].strip('. ')
