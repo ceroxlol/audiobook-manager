@@ -209,10 +209,19 @@ class QBittorrentClient:
             return False
     
     async def ensure_audiobooks_category(self) -> bool:
-        """Ensure audiobooks category exists"""
+        """Ensure audiobooks category exists with correct path"""
         categories = await self.get_categories()
+        target_path = config.get('storage.download_path')
+        
         if 'audiobooks' not in categories:
-            return await self.create_category('audiobooks')
+            return await self.create_category('audiobooks', target_path)
+        else:
+            current_path = categories['audiobooks'].get('savePath', '')
+            if current_path != target_path:
+                # Note: qBittorrent API doesn't have a direct way to update category path
+                # So we'll delete and recreate the category
+                await self._make_request('post', 'torrents/removeCategories', data={'categories': 'audiobooks'})
+                return await self.create_category('audiobooks', target_path)
         return True
     
     async def get_download_speed(self) -> float:
