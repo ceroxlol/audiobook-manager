@@ -789,27 +789,41 @@
                         ${download.error_message ? `
                             <div><strong>Error:</strong> ${escapeHtml(download.error_message)}</div>
                         ` : ''}
+                        ${download.download_path ? `
+                            <div><strong>Location:</strong> ${escapeHtml(download.download_path)}</div>
+                        ` : ''}
                     </div>
                     
                     <div class="queue-actions">
                         ${download.status === 'downloading' || download.status === 'starting' ? `
-                            <button class="btn btn-danger" onclick="cancelDownload(${download.id})">
+                            <button class="btn btn-danger" onclick="cancelDownload(${download.id}, false)">
                                 ❌ Cancel
+                            </button>
+                            <button class="btn btn-danger" onclick="cancelDownload(${download.id}, true)" title="Cancel and delete files">
+                                🗑️ Cancel & Delete
                             </button>
                         ` : ''}
                         ${download.status === 'completed' ? `
                             <button class="btn btn-success" disabled>✅ Completed</button>
+                        ` : ''}
+                        ${download.status === 'failed' || download.status === 'cancelled' ? `
+                            <button class="btn btn-danger" onclick="cancelDownload(${download.id}, true)" title="Delete files">
+                                🗑️ Delete Files
+                            </button>
                         ` : ''}
                     </div>
                 </div>
             `).join('');
         }
         
-        async function cancelDownload(jobId) {
-            if (!confirm('Are you sure you want to cancel this download?')) return;
+        async function cancelDownload(jobId, deleteFiles = false) {
+            if (!confirm('Are you sure you want to cancel this download?' + (deleteFiles ? ' This will also delete any downloaded files.' : ''))) {
+                return;
+            }
             
             try {
-                const response = await fetch(`/api/v1/download/${jobId}?delete_files=false`, {
+                const url = `/api/v1/download/${jobId}?delete_files=${deleteFiles}`;
+                const response = await fetch(url, {
                     method: 'DELETE'
                 });
                 const data = await response.json();

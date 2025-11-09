@@ -78,7 +78,7 @@ class FileManager:
     
     async def organize_downloaded_audiobook(self, download_path: str) -> Optional[Dict[str, Any]]:
         """
-        Organize a downloaded audiobook into the library structure
+        Organize a downloaded audiobook from qBittorrent location to library location
         
         Returns: Metadata about the organized audiobook
         """
@@ -90,8 +90,10 @@ class FileManager:
             # If it's a file, get its directory
             if os.path.isfile(download_path):
                 download_dir = os.path.dirname(download_path)
+                is_single_file = True
             else:
                 download_dir = download_path
+                is_single_file = False
             
             # Get audio files to determine if this is an audiobook
             audio_files = self.get_audio_files(download_dir)
@@ -99,10 +101,15 @@ class FileManager:
                 logger.warning(f"No audio files found in {download_dir}")
                 return None
             
-            # Extract metadata from the first audio file
-            first_file = audio_files[0]
-            filename = os.path.basename(first_file)
-            metadata = self.extract_metadata_from_filename(filename)
+            # Extract metadata from the folder name or first audio file
+            folder_name = os.path.basename(download_dir.rstrip('/'))
+            metadata = self.extract_metadata_from_filename(folder_name)
+            
+            # If single file, try to extract better metadata from filename
+            if is_single_file:
+                file_metadata = self.extract_metadata_from_filename(os.path.basename(download_path))
+                if file_metadata['author'] != 'Unknown Author':
+                    metadata = file_metadata
             
             # Create safe folder names
             safe_author = self._make_filesystem_safe(metadata['author'])
@@ -114,14 +121,32 @@ class FileManager:
             
             os.makedirs(title_dir, exist_ok=True)
             
-            # Copy/Move files to library
-            for audio_file in audio_files:
-                filename = os.path.basename(audio_file)
+            # Copy all files (not just audio) to preserve metadata, covers, etc.
+            copied_files = []
+            if is_single_file:
+                # Single file download
+                filename = os.path.basename(download_path)
                 dest_path = os.path.join(title_dir, filename)
-                
                 if not os.path.exists(dest_path):
-                    shutil.copy2(audio_file, dest_path)
+                    shutil.copy2(download_path, dest_path)
+                    copied_files.append(filename)
                     logger.debug(f"Copied {filename} to library")
+            else:
+                # Directory download - copy all files
+                for root, dirs, files in os.walk(download_dir):
+                    for file in files:
+                        src_path = os.path.join(root, file)
+                        # Calculate relative path for nested directories
+                        rel_path = os.path.relpath(src_path, download_dir)
+                        dest_path = os.path.join(title_dir, rel_path)
+                        
+                        # Create subdirectories if needed
+                        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                        
+                        if not os.path.exists(dest_path):
+                            shutil.copy2(src_path, dest_path)
+                            copied_files.append(rel_path)
+                            logger.debug(f"Copied {rel_path} to library")
             
             logger.info(f"Organized audiobook: {metadata['title']} by {metadata['author']}")
             
@@ -130,7 +155,8 @@ class FileManager:
                 'title': metadata['title'],
                 'library_path': title_dir,
                 'author_path': author_dir,
-                'audio_files': [os.path.basename(f) for f in audio_files]
+                'files_copied': copied_files,
+                'source_path': download_path
             }
             
         except Exception as e:
@@ -147,14 +173,19 @@ class FileManager:
         return safe_name[:100]
     
     async def cleanup_download(self, download_path: str):
-        """Clean up downloaded files after organization"""
+        """Clean up downloaded files from qBittorrent location after organization"""
         try:
             if os.path.exists(download_path):
-                if os.path.isfile(download_path):
-                    os.remove(download_path)
+                # Only delete if the file/folder is in our download path (safety check)
+                if download_path.startswith(self.download_path):
+                    if os.path.isfile(download_path):
+                        os.remove(download_path)
+                        logger.info(f"Deleted downloaded file: {download_path}")
+                    else:
+                        shutil.rmtree(download_path)
+                        logger.info(f"Deleted downloaded folder: {download_path}")
                 else:
-                    shutil.rmtree(download_path)
-                logger.info(f"Cleaned up download: {download_path}")
+                    logger.warning(f"Not deleting {download_path} - outside download directory")
         except Exception as e:
             logger.error(f"Failed to cleanup {download_path}: {e}")
     

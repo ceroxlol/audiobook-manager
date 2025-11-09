@@ -184,17 +184,17 @@ class DownloadManager:
                 del self.monitoring_tasks[job_id]
 
     async def _process_completed_download(self, 
-                                        download_job: DownloadJob, 
-                                        search_result: SearchResult, 
-                                        db: Session):
-        """Process a completed download - organize and add to Audiobookshelf"""
+                                    download_job: DownloadJob, 
+                                    search_result: SearchResult, 
+                                    db: Session):
+        """Process a completed download - copy to library and add to Audiobookshelf"""
         try:
             download_job.status = "processing"
             db.commit()
             
             logger.info(f"Processing completed download: {search_result.title}")
             
-            # Organize the downloaded files
+            # Organize the downloaded files (copy from download_path to library_path)
             organization_result = await self.file_manager.organize_downloaded_audiobook(
                 download_job.download_path
             )
@@ -205,7 +205,7 @@ class DownloadManager:
                 db.commit()
                 return
             
-            # Add to Audiobookshelf
+            # Add to Audiobookshelf using the new library path
             abs_success = await self._add_to_audiobookshelf(organization_result, search_result)
             
             if abs_success:
@@ -213,7 +213,7 @@ class DownloadManager:
                 download_job.completed_at = time.time()
                 logger.info(f"Successfully processed download: {search_result.title}")
                 
-                # Cleanup download files
+                # Cleanup download files from qBittorrent location
                 await self.file_manager.cleanup_download(download_job.download_path)
                 
             else:
