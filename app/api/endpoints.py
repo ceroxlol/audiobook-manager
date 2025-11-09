@@ -100,11 +100,15 @@ async def cancel_download(
     delete_files: bool = Query(False, description="Delete downloaded files"),
     db: Session = Depends(get_db)
 ):
-    """Cancel a download job"""
+    """Cancel a download job and remove from qBittorrent"""
     try:
+        job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+        if not job:
+            raise HTTPException(status_code=404, detail="Download job not found")
+        
         success = await download_manager.cancel_download(job_id, db, delete_files)
         if not success:
-            raise HTTPException(status_code=404, detail="Download job not found or cannot be cancelled")
+            raise HTTPException(status_code=500, detail="Failed to cancel download")
         
         return {"message": "Download cancelled successfully"}
     except Exception as e:
@@ -223,7 +227,6 @@ async def get_system_status():
             }
         }
 
-# Add new endpoint for Audiobookshelf operations
 @router.get("/audiobookshelf/libraries")
 async def get_audiobookshelf_libraries():
     """Get Audiobookshelf libraries"""

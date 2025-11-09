@@ -312,29 +312,36 @@ class DownloadManager:
         return status
     
     async def cancel_download(self, job_id: int, db: Session, delete_files: bool = False) -> bool:
-        """Cancel a download job"""
+        """Cancel a download job and remove from qBittorrent"""
         job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
         if not job:
             return False
         
-        if job.status in ['completed', 'failed']:
+        if job.status in ['completed', 'failed', 'cancelled']:
             return True
         
         try:
+            # If we have a torrent hash, delete from qBittorrent
             if job.torrent_hash:
-                # Delete from qBittorrent
                 success = await qbittorrent_client.delete_torrent(
                     job.torrent_hash, 
                     delete_files=delete_files
                 )
                 if success:
                     job.status = "cancelled"
+                    job.error_message = "Cancelled by user"
                     db.commit()
+                    logger.info(f"Successfully cancelled download {job_id} and removed from qBittorrent")
                     return True
+                else:
+                    logger.error(f"Failed to delete torrent from qBittorrent for job {job_id}")
+                    return False
             else:
                 # No torrent hash yet, just mark as cancelled
                 job.status = "cancelled"
+                job.error_message = "Cancelled by user"
                 db.commit()
+                logger.info(f"Marked download {job_id} as cancelled (no torrent hash yet)")
                 return True
                 
         except Exception as e:
