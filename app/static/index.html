@@ -746,7 +746,7 @@
             const statsDiv = document.getElementById('queueStats');
             
             // Update stats
-            const active = data.downloads.filter(d => d.status === 'downloading' || d.status === 'starting').length;
+            const active = data.downloads.filter(d => d.status === 'downloading' || d.status === 'starting' || d.status === 'processing').length;
             const completed = data.downloads.filter(d => d.status === 'completed').length;
             const failed = data.downloads.filter(d => d.status === 'failed').length;
             
@@ -768,7 +768,7 @@
                         </span>
                     </div>
                     
-                    ${download.status === 'downloading' ? `
+                    ${download.status === 'downloading' || download.status === 'processing' ? `
                         <div class="progress-container">
                             <div class="progress-bar">
                                 <div class="progress-fill" style="width: ${download.progress}%"></div>
@@ -777,6 +777,7 @@
                                 <span>${download.progress.toFixed(1)}%</span>
                                 ${download.download_speed ? `<span>${formatBytes(download.download_speed)}/s</span>` : ''}
                                 ${download.eta ? `<span>ETA: ${formatTime(download.eta)}</span>` : ''}
+                                ${download.state ? `<span>State: ${download.state}</span>` : ''}
                             </div>
                         </div>
                     ` : ''}
@@ -786,16 +787,22 @@
                         ${download.completed_at ? `
                             <div><strong>Completed:</strong> ${new Date(download.completed_at).toLocaleString()}</div>
                         ` : ''}
+                        ${download.torrent_hash ? `
+                            <div><strong>Torrent Hash:</strong> <code>${download.torrent_hash.substring(0, 16)}...</code></div>
+                        ` : ''}
+                        ${download.torrent_name ? `
+                            <div><strong>Torrent:</strong> ${escapeHtml(download.torrent_name)}</div>
+                        ` : ''}
                         ${download.error_message ? `
                             <div><strong>Error:</strong> ${escapeHtml(download.error_message)}</div>
                         ` : ''}
-                        ${download.download_path ? `
-                            <div><strong>Location:</strong> ${escapeHtml(download.download_path)}</div>
+                        ${download.torrent_error ? `
+                            <div><strong>Torrent Error:</strong> ${escapeHtml(download.torrent_error)}</div>
                         ` : ''}
                     </div>
                     
                     <div class="queue-actions">
-                        ${download.status === 'downloading' || download.status === 'starting' ? `
+                        ${(download.status === 'downloading' || download.status === 'starting') ? `
                             <button class="btn btn-danger" onclick="cancelDownload(${download.id}, false)">
                                 ❌ Cancel
                             </button>
@@ -806,7 +813,7 @@
                         ${download.status === 'completed' ? `
                             <button class="btn btn-success" disabled>✅ Completed</button>
                         ` : ''}
-                        ${download.status === 'failed' || download.status === 'cancelled' ? `
+                        ${(download.status === 'failed' || download.status === 'cancelled') ? `
                             <button class="btn btn-danger" onclick="cancelDownload(${download.id}, true)" title="Delete files">
                                 🗑️ Delete Files
                             </button>

@@ -134,28 +134,36 @@ async def get_download_queue(db: Session = Depends(get_db)):
                 "progress": job.progress,
                 "created_at": job.created_at.isoformat() if job.created_at else None,
                 "completed_at": job.completed_at.isoformat() if job.completed_at else None,
-                "error_message": job.error_message
+                "error_message": job.error_message,
+                "torrent_hash": job.torrent_hash
             }
             
-            # Add torrent details if available
+            # Add torrent details if available and downloading
             if job.status == "downloading" and job.torrent_hash:
                 try:
                     torrent = await qbittorrent_client.get_torrent(job.torrent_hash)
                     if torrent:
                         download_info.update({
                             "download_speed": torrent.get('dlspeed', 0),
+                            "upload_speed": torrent.get('upspeed', 0),
+                            "size": torrent.get('size', 0),
+                            "downloaded": torrent.get('downloaded', 0),
                             "eta": torrent.get('eta', 0),
-                            "seeds": torrent.get('num_seeds', 0)
+                            "seeds": torrent.get('num_seeds', 0),
+                            "peers": torrent.get('num_leechs', 0),
+                            "state": torrent.get('state', 'unknown'),
+                            "torrent_name": torrent.get('name', 'Unknown')
                         })
-                except Exception:
-                    pass  # Skip torrent details if unavailable
+                except Exception as e:
+                    logger.debug(f"Could not get torrent details for {job.torrent_hash}: {e}")
+                    download_info['torrent_error'] = str(e)
             
             detailed_downloads.append(download_info)
         
         return {
             "downloads": detailed_downloads,
             "total": len(detailed_downloads),
-            "active": len([d for d in detailed_downloads if d['status'] in ['starting', 'downloading']])
+            "active": len([d for d in detailed_downloads if d['status'] in ['starting', 'downloading', 'processing']])
         }
     except Exception as e:
         logger.error(f"Failed to get download queue: {e}")
@@ -308,3 +316,31 @@ async def get_system_health():
             "healthy": False,
             "error": str(e)
         }
+    
+@router.get("/debug/qbittorrent")
+async def debug_qbittorrent():
+    """Debug endpoint to check qBittorrent status"""
+    try:
+        # Get all torrents
+        torrents = await qbittorrent_client.get_torrents()
+        audiobooks_torrents = await qbittorrent_client.get_torrents(category="audiobooks")
+        
+        return {
+            "total_torrents": len(torrents),
+            "audiobooks_torrents": len(audiobooks_torrents),
+            "audiobooks_torrents_list": [
+                {
+                    "name": t.get('name'),
+                    "hash": t.get('hash'),
+                    "progress": t.get('progress', 0) * 100,
+                    "state": t.get('state'),
+                    "tags": t.get('tags', ''),
+                    "size": t.get('size', 0),
+                    "downloaded": t.get('downloaded', 0)
+                }
+                for t in audiobooks_torrents
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Debug endpoint failed: {e}")
+        return {"error": str(e)}

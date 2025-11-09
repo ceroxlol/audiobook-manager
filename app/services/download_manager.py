@@ -21,10 +21,10 @@ class DownloadManager:
         self.file_manager = FileManager()
     
     async def start_download(self, 
-                           search_result_id: int, 
-                           db: Session) -> Optional[DownloadJob]:
+                       search_result_id: int, 
+                       db: Session) -> Optional[DownloadJob]:
         """
-        Start downloading a search result
+        Start downloading a search result with better tagging
         """
         # Get search result
         result = db.query(SearchResult).filter(SearchResult.id == search_result_id).first()
@@ -53,11 +53,14 @@ class DownloadManager:
                 db.commit()
                 return download_job
             
-            # Add to qBittorrent
+            # Create unique tag for this download
+            unique_tag = f"audiobook-manager-{download_job.id}"
+            
+            # Add to qBittorrent with better tagging
             success = await qbittorrent_client.add_torrent(
                 torrent_url=download_url,
                 category="audiobooks",
-                tags=[f"audiobook-manager-{download_job.id}"]
+                tags=[unique_tag, "audiobook-manager"]  # Multiple tags for better tracking
             )
             
             if not success:
@@ -69,7 +72,7 @@ class DownloadManager:
             download_job.status = "downloading"
             db.commit()
             
-            logger.info(f"Started download for: {result.title} (Job: {download_job.id})")
+            logger.info(f"Started download for: {result.title} (Job: {download_job.id}, Tag: {unique_tag})")
             
             # Start monitoring this download
             await self._start_monitoring(download_job.id, db)
@@ -92,7 +95,7 @@ class DownloadManager:
         self.monitoring_tasks[job_id] = task
     
     async def _monitor_download(self, job_id: int, db: Session):
-        """Monitor download progress and handle completion"""
+        """Monitor download progress with improved torrent matching"""
         logger.info(f"Started monitoring download job {job_id}")
         
         try:
@@ -106,10 +109,11 @@ class DownloadManager:
                 logger.error(f"Search result for job {job_id} not found")
                 return
             
-            # We'll check for the torrent by looking for our tag
+            # We'll check for the torrent by looking for our tag AND by matching the title
             target_tag = f"audiobook-manager-{job_id}"
-            max_attempts = 600  # 50 minutes (5 second intervals)
+            max_attempts = 1200  # 100 minutes (5 second intervals) - longer timeout for large files
             attempts = 0
+            torrent_hash = None
             
             while attempts < max_attempts:
                 attempts += 1
@@ -118,38 +122,68 @@ class DownloadManager:
                     # Get all torrents in audiobooks category
                     torrents = await qbittorrent_client.get_torrents(category="audiobooks")
                     
-                    # Find our torrent (by name initially, since we don't have hash)
-                    matching_torrents = [
-                        t for t in torrents 
-                        if search_result.title.lower() in t.get('name', '').lower()
-                        or target_tag in t.get('tags', '')
-                    ]
+                    # Find our torrent - try multiple strategies
+                    matching_torrent = None
                     
-                    if matching_torrents:
-                        torrent = matching_torrents[0]
-                        torrent_hash = torrent.get('hash')
+                    # Strategy 1: Look for our specific tag
+                    for torrent in torrents:
+                        if target_tag in torrent.get('tags', ''):
+                            matching_torrent = torrent
+                            break
+                    
+                    # Strategy 2: Look for torrents with similar names (fallback)
+                    if not matching_torrent:
+                        search_title_lower = search_result.title.lower()
+                        for torrent in torrents:
+                            torrent_name = torrent.get('name', '').lower()
+                            # Check if the search result title is in the torrent name
+                            if search_title_lower in torrent_name:
+                                # Additional check: make sure this isn't someone else's torrent
+                                # by checking if it was added around the same time as our job
+                                torrent_added = torrent.get('added_on', 0)
+                                job_created = download_job.created_at.timestamp() if download_job.created_at else 0
+                                time_diff = abs(torrent_added - job_created)
+                                
+                                if time_diff < 300:  # Within 5 minutes
+                                    matching_torrent = torrent
+                                    logger.info(f"Found torrent by name match: {torrent_name}")
+                                    break
+                    
+                    if matching_torrent:
+                        torrent_hash = matching_torrent.get('hash')
+                        torrent_name = matching_torrent.get('name', 'Unknown')
                         
-                        # Update job with torrent hash
+                        # Update job with torrent hash if not set
                         if not download_job.torrent_hash:
                             download_job.torrent_hash = torrent_hash
-                            db.commit()
+                            logger.info(f"Associated torrent {torrent_hash} with job {job_id}")
                         
                         # Update progress
-                        progress = torrent.get('progress', 0) * 100
+                        progress = matching_torrent.get('progress', 0) * 100
+                        previous_progress = download_job.progress
                         download_job.progress = progress
                         
-                        # Check status
-                        state = torrent.get('state', '')
+                        # Log progress changes
+                        if progress != previous_progress:
+                            logger.debug(f"Download progress for job {job_id}: {progress:.1f}%")
                         
-                        if progress >= 100:
+                        # Check status
+                        state = matching_torrent.get('state', '')
+                        
+                        if progress >= 99.9:  # Use 99.9% to account for rounding
                             # Download completed - process the audiobook
-                            download_path = torrent.get('content_path', '')
+                            download_path = matching_torrent.get('content_path', '')
                             download_job.download_path = download_path
+                            download_job.status = "processing"
+                            db.commit()
                             
+                            logger.info(f"Download completed for job {job_id}: {torrent_name}")
+                            
+                            # Process the completed download
                             await self._process_completed_download(download_job, search_result, db)
                             break
                             
-                        elif state in ['error', 'missingFiles', 'pausedUP']:
+                        elif state in ['error', 'missingFiles', 'pausedUP', 'unknown']:
                             download_job.status = "failed"
                             download_job.error_message = f"Torrent state: {state}"
                             db.commit()
@@ -160,16 +194,22 @@ class DownloadManager:
                             db.commit()
                     
                     else:
-                        # Torrent not found yet, might need more time
-                        if attempts > 60:  # After 5 minutes
+                        # Torrent not found yet
+                        if attempts == 1:
+                            logger.info(f"Waiting for torrent to appear in qBittorrent for job {job_id}")
+                        elif attempts % 12 == 0:  # Log every minute
+                            logger.info(f"Still waiting for torrent for job {job_id} (attempt {attempts})")
+                        
+                        if attempts > 120:  # After 10 minutes without finding torrent
                             download_job.status = "failed"
                             download_job.error_message = "Torrent not found in qBittorrent after timeout"
                             db.commit()
-                            logger.error(f"Torrent not found for job {job_id}")
+                            logger.error(f"Torrent not found for job {job_id} after {attempts} attempts")
                             break
                 
                 except Exception as e:
                     logger.error(f"Error monitoring download job {job_id}: {e}")
+                    # Don't break on temporary errors, just continue monitoring
                 
                 # Wait before next check
                 await asyncio.sleep(5)
@@ -177,6 +217,7 @@ class DownloadManager:
             # Cleanup monitoring task
             if job_id in self.monitoring_tasks:
                 del self.monitoring_tasks[job_id]
+            logger.info(f"Stopped monitoring download job {job_id}")
                 
         except Exception as e:
             logger.error(f"Monitoring task failed for job {job_id}: {e}")
