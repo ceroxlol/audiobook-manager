@@ -435,24 +435,33 @@ class DownloadManager:
             return False
     
     async def cleanup_completed_downloads(self, db: Session, older_than_days: int = 7):
-        """Clean up old completed download records"""
-        from sqlalchemy import and_
+        """Clean up old completed, failed, and cancelled download records"""
+        from sqlalchemy import or_
         from datetime import datetime, timedelta
-        
+
         cutoff_date = datetime.now() - timedelta(days=older_than_days)
-        
+
         try:
-            # Delete old completed downloads
-            deleted_count = db.query(DownloadJob).filter(
-                and_(
-                    DownloadJob.status.in_(['completed', 'cancelled', 'failed']),
-                    DownloadJob.created_at < cutoff_date
+            # Find jobs to delete
+            jobs_to_delete = db.query(DownloadJob).filter(
+                DownloadJob.status.in_(['completed', 'cancelled', 'failed']),
+                or_(
+                    # If completed, use completed_at
+                    (DownloadJob.status == 'completed') & (DownloadJob.completed_at != None) & (DownloadJob.completed_at < cutoff_date),
+                    # Otherwise, use created_at
+                    (DownloadJob.status.in_(['failed', 'cancelled'])) & (DownloadJob.created_at < cutoff_date)
                 )
-            ).delete()
-            
+            ).all()
+
+            deleted_count = 0
+            for job in jobs_to_delete:
+                logger.info(f"Deleting old job {job.id} ({job.status}) created at {job.created_at} completed at {job.completed_at}")
+                db.delete(job)
+                deleted_count += 1
+
             db.commit()
-            logger.info(f"Cleaned up {deleted_count} old download records")
-            
+            logger.info(f"Cleaned up {deleted_count} old download records (failed, cancelled, completed)")
+
         except Exception as e:
             logger.error(f"Failed to cleanup download records: {e}")
             db.rollback()
