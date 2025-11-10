@@ -10,7 +10,7 @@ from .prowlarr import prowlarr_client
 from .audiobookshelf import audiobookshelf_client
 from .file_manager import FileManager
 from ..models import DownloadJob, SearchResult
-from ..database import get_db
+from ..database import get_db, SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,8 @@ class DownloadManager:
             
             logger.info(f"Started download for: {result.title} (Job: {download_job.id}, Tag: {unique_tag})")
             
-            # Start monitoring this download
-            await self._start_monitoring(download_job.id, db)
+            # Start monitoring this download (don't pass db session)
+            await self._start_monitoring(download_job.id)
             
             return download_job
             
@@ -86,28 +86,34 @@ class DownloadManager:
             db.commit()
             return download_job
     
-    async def _start_monitoring(self, job_id: int, db: Session):
+    async def _start_monitoring(self, job_id: int):
         """Start monitoring a download job"""
         if job_id in self.monitoring_tasks:
             return
         
-        task = asyncio.create_task(self._monitor_download(job_id, db))
+        task = asyncio.create_task(self._monitor_download(job_id))
         self.monitoring_tasks[job_id] = task
     
-    async def _monitor_download(self, job_id: int, db: Session):
+    async def _monitor_download(self, job_id: int):
         """Monitor download progress with improved torrent matching"""
         logger.info(f"Started monitoring download job {job_id}")
         
         try:
-            download_job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
-            if not download_job:
-                logger.error(f"Download job {job_id} not found for monitoring")
-                return
+            # Create a new database session for this monitoring task
+            db = SessionLocal()
             
-            search_result = db.query(SearchResult).filter(SearchResult.id == download_job.search_result_id).first()
-            if not search_result:
-                logger.error(f"Search result for job {job_id} not found")
-                return
+            try:
+                download_job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+                if not download_job:
+                    logger.error(f"Download job {job_id} not found for monitoring")
+                    return
+                
+                search_result = db.query(SearchResult).filter(SearchResult.id == download_job.search_result_id).first()
+                if not search_result:
+                    logger.error(f"Search result for job {job_id} not found")
+                    return
+            finally:
+                db.close()
             
             # We'll check for the torrent by looking for our tag AND by matching the title
             target_tag = f"audiobook-manager-{job_id}"
@@ -118,7 +124,21 @@ class DownloadManager:
             while attempts < max_attempts:
                 attempts += 1
                 
+                # Create a fresh database session for each update
+                db = SessionLocal()
+                
                 try:
+                    # Refresh the download_job from database
+                    download_job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+                    if not download_job:
+                        logger.error(f"Download job {job_id} disappeared during monitoring")
+                        break
+                    
+                    # Check if job was cancelled
+                    if download_job.status in ['cancelled', 'completed', 'failed']:
+                        logger.info(f"Download job {job_id} is {download_job.status}, stopping monitoring")
+                        break
+                    
                     # Get all torrents in audiobooks category
                     torrents = await qbittorrent_client.get_torrents(category="audiobooks")
                     
@@ -179,8 +199,15 @@ class DownloadManager:
                             
                             logger.info(f"Download completed for job {job_id}: {torrent_name}")
                             
-                            # Process the completed download
-                            await self._process_completed_download(download_job, search_result, db)
+                            # Process the completed download (pass a fresh db session)
+                            process_db = SessionLocal()
+                            try:
+                                # Refresh objects in new session
+                                download_job = process_db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+                                search_result = process_db.query(SearchResult).filter(SearchResult.id == download_job.search_result_id).first()
+                                await self._process_completed_download(download_job, search_result, process_db)
+                            finally:
+                                process_db.close()
                             break
                             
                         elif state in ['error', 'missingFiles', 'pausedUP', 'unknown']:
@@ -210,6 +237,9 @@ class DownloadManager:
                 except Exception as e:
                     logger.error(f"Error monitoring download job {job_id}: {e}")
                     # Don't break on temporary errors, just continue monitoring
+                finally:
+                    # Always close the database session
+                    db.close()
                 
                 # Wait before next check
                 await asyncio.sleep(5)
