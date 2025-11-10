@@ -210,19 +210,27 @@ class QBittorrentClient:
     
     async def ensure_audiobooks_category(self) -> bool:
         """Ensure audiobooks category exists with correct path"""
-        categories = await self.get_categories()
-        target_path = config.get('storage.download_path')
-        
-        if 'audiobooks' not in categories:
-            return await self.create_category('audiobooks', target_path)
-        else:
-            current_path = categories['audiobooks'].get('savePath', '')
-            if current_path != target_path:
-                # Note: qBittorrent API doesn't have a direct way to update category path
-                # So we'll delete and recreate the category
-                await self._make_request('post', 'torrents/removeCategories', data={'categories': 'audiobooks'})
+        try:
+            categories = await self.get_categories()
+            target_path = config.get('storage.download_path')
+            
+            if 'audiobooks' not in categories:
+                logger.info(f"Creating audiobooks category with path: {target_path}")
                 return await self.create_category('audiobooks', target_path)
-        return True
+            else:
+                current_path = categories['audiobooks'].get('savePath', '')
+                logger.debug(f"Audiobooks category exists with path: {current_path}")
+                
+                # If path is different, we can't easily update it in qBittorrent
+                # Just log a warning and continue - the category exists which is what matters
+                if current_path != target_path:
+                    logger.warning(f"Audiobooks category path ({current_path}) differs from config ({target_path}). "
+                                 f"Torrents will be saved to the category's existing path.")
+                return True
+        except Exception as e:
+            logger.error(f"Failed to ensure audiobooks category: {e}")
+            # Don't fail the download if category check fails - qBittorrent will use default
+            return True
     
     async def get_download_speed(self) -> float:
         """Get current download speed in bytes/s"""

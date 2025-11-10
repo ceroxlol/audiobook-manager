@@ -177,6 +177,10 @@ class DownloadManager:
                         if not download_job.torrent_hash:
                             download_job.torrent_hash = torrent_hash
                             logger.info(f"Associated torrent {torrent_hash} with job {job_id}")
+                            # Log torrent details for debugging
+                            logger.debug(f"Torrent details: save_path={matching_torrent.get('save_path')}, "
+                                       f"content_path={matching_torrent.get('content_path')}, "
+                                       f"name={torrent_name}, state={matching_torrent.get('state')}")
                         
                         # Update progress
                         progress = matching_torrent.get('progress', 0) * 100
@@ -192,12 +196,23 @@ class DownloadManager:
                         
                         if progress >= 99.9:  # Use 99.9% to account for rounding
                             # Download completed - process the audiobook
+                            # Get the path - try content_path first, then save_path + name
                             download_path = matching_torrent.get('content_path', '')
+                            if not download_path:
+                                # Fallback: construct path from save_path and name
+                                save_path = matching_torrent.get('save_path', '')
+                                name = matching_torrent.get('name', '')
+                                if save_path and name:
+                                    download_path = os.path.join(save_path, name)
+                            
                             download_job.download_path = download_path
                             download_job.status = "processing"
                             db.commit()
                             
-                            logger.info(f"Download completed for job {job_id}: {torrent_name}")
+                            logger.info(f"Download completed for job {job_id}: {torrent_name} at {download_path}")
+                            
+                            # Wait a moment for filesystem to sync
+                            await asyncio.sleep(2)
                             
                             # Process the completed download (pass a fresh db session)
                             process_db = SessionLocal()

@@ -11,6 +11,7 @@ from .api.endpoints import router as api_router
 from .logger import setup_logging
 from .middleware.error_handler import ErrorHandlerMiddleware
 from .middleware.rate_limiter import RateLimiterMiddleware
+from .services.qbittorrent import qbittorrent_client
 
 # Setup logging first
 logger = setup_logging()
@@ -64,6 +65,10 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Audiobook Manager shutting down...")
+    # Close qBittorrent client session
+    if qbittorrent_client.session:
+        await qbittorrent_client.session.close()
+        logger.info("Closed qBittorrent client session")
 
 if __name__ == "__main__":
     import uvicorn

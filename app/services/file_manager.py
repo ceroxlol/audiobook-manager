@@ -83,8 +83,25 @@ class FileManager:
         Returns: Metadata about the organized audiobook
         """
         try:
+            logger.info(f"Attempting to organize audiobook from path: {download_path}")
+            
+            if not download_path:
+                logger.error("Download path is empty or None")
+                return None
+            
             if not os.path.exists(download_path):
                 logger.error(f"Download path does not exist: {download_path}")
+                # Try to list parent directory to help debug
+                parent_dir = os.path.dirname(download_path)
+                if os.path.exists(parent_dir):
+                    logger.info(f"Parent directory exists: {parent_dir}")
+                    try:
+                        contents = os.listdir(parent_dir)
+                        logger.info(f"Parent directory contains: {contents[:10]}")  # First 10 items
+                    except Exception as e:
+                        logger.error(f"Could not list parent directory: {e}")
+                else:
+                    logger.error(f"Parent directory does not exist: {parent_dir}")
                 return None
             
             # If it's a file, get its directory
