@@ -300,8 +300,9 @@ class DownloadManager:
                     if scan_success:
                         logger.info(f"Triggered library scan for {library.get('name', library['id'])}")
                 
+                from datetime import datetime
                 download_job.status = "completed"
-                download_job.completed_at = time.time()
+                download_job.completed_at = datetime.now()
                 logger.info(f"Successfully processed download: {search_result.title}")
             else:
                 download_job.status = "completed_with_warning"
