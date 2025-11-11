@@ -122,7 +122,7 @@ class QBittorrentClient:
         data = {
             'urls': torrent_url,
             'category': category,
-            'savepath': save_path,
+            #'savepath': save_path,
             'paused': 'false'
         }
         
