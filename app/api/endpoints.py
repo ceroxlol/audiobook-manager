@@ -115,6 +115,23 @@ async def cancel_download(
         logger.error(f"Failed to cancel download: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to cancel download: {str(e)}")
 
+@router.delete("/queue/job/{job_id}")
+async def delete_download_job(
+    job_id: int,
+    delete_files: bool = Query(True, description="Delete downloaded files"),
+    db: Session = Depends(get_db)
+):
+    """Delete a download job from queue and optionally delete its files"""
+    try:
+        success = await download_manager.delete_download_job(job_id, db, delete_files)
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete download job")
+        
+        return {"message": "Download job deleted successfully"}
+    except Exception as e:
+        logger.error(f"Failed to delete download job: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete download job: {str(e)}")
+
 @router.get("/queue")
 async def get_download_queue(db: Session = Depends(get_db)):
     """Get current download queue with detailed status"""
@@ -176,8 +193,11 @@ async def cleanup_queue(
 ):
     """Clean up old download records"""
     try:
-        await download_manager.cleanup_completed_downloads(db, older_than_days)
-        return {"message": f"Cleaned up records older than {older_than_days} days"}
+        deleted_count = await download_manager.cleanup_completed_downloads(db, older_than_days)
+        return {
+            "message": f"Cleaned up {deleted_count} records older than {older_than_days} days",
+            "deleted_count": deleted_count
+        }
     except Exception as e:
         logger.error(f"Cleanup failed: {e}")
         raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")

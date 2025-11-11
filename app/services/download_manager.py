@@ -1,9 +1,10 @@
 import asyncio
 import time
+import os
+import shutil
 from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 import logging
-import os
 
 from .qbittorrent import qbittorrent_client
 from .prowlarr import prowlarr_client
@@ -11,6 +12,7 @@ from .audiobookshelf import audiobookshelf_client
 from .file_manager import FileManager
 from ..models import DownloadJob, SearchResult
 from ..database import get_db, SessionLocal
+from ..config import config
 
 logger = logging.getLogger(__name__)
 
@@ -196,20 +198,19 @@ class DownloadManager:
                         
                         if progress >= 99.9:  # Use 99.9% to account for rounding
                             # Download completed - process the audiobook
-                            # Get the path - try content_path first, then save_path + name
-                            download_path = matching_torrent.get('content_path', '')
-                            if not download_path:
-                                # Fallback: construct path from save_path and name
-                                save_path = matching_torrent.get('save_path', '')
-                                name = matching_torrent.get('name', '')
-                                if save_path and name:
-                                    download_path = os.path.join(save_path, name)
+                            # Get torrent name to find it in download_path
+                            torrent_name = matching_torrent.get('name', '')
+                            
+                            # The file should be in our download_path (mapped from qBittorrent)
+                            download_path_base = config.get('storage.download_path')
+                            download_path = os.path.join(download_path_base, torrent_name)
                             
                             download_job.download_path = download_path
                             download_job.status = "processing"
                             db.commit()
                             
-                            logger.info(f"Download completed for job {job_id}: {torrent_name} at {download_path}")
+                            logger.info(f"Download completed for job {job_id}: {torrent_name}")
+                            logger.info(f"Looking for files in: {download_path}")
                             
                             # Wait a moment for filesystem to sync
                             await asyncio.sleep(2)
@@ -273,14 +274,14 @@ class DownloadManager:
                                     download_job: DownloadJob, 
                                     search_result: SearchResult, 
                                     db: Session):
-        """Process a completed download - copy to library and add to Audiobookshelf"""
+        """Process a completed download - move to library and notify Audiobookshelf"""
         try:
             download_job.status = "processing"
             db.commit()
             
             logger.info(f"Processing completed download: {search_result.title}")
             
-            # Organize the downloaded files (copy from download_path to library_path)
+            # Move the downloaded files from download_path to library_path
             organization_result = await self.file_manager.organize_downloaded_audiobook(
                 download_job.download_path
             )
@@ -291,21 +292,21 @@ class DownloadManager:
                 db.commit()
                 return
             
-            # Add to Audiobookshelf using the new library path
-            abs_success = await self._add_to_audiobookshelf(organization_result, search_result)
-            
-            if abs_success:
+            # Trigger Audiobookshelf library scan so it picks up the new audiobook
+            libraries = await audiobookshelf_client.get_libraries()
+            if libraries:
+                for library in libraries:
+                    scan_success = await audiobookshelf_client.scan_library(library['id'])
+                    if scan_success:
+                        logger.info(f"Triggered library scan for {library.get('name', library['id'])}")
+                
                 download_job.status = "completed"
                 download_job.completed_at = time.time()
                 logger.info(f"Successfully processed download: {search_result.title}")
-                
-                # Cleanup download files from qBittorrent location
-                await self.file_manager.cleanup_download(download_job.download_path)
-                
             else:
                 download_job.status = "completed_with_warning"
-                download_job.error_message = "Download completed but failed to add to Audiobookshelf"
-                logger.warning(f"Download completed but Audiobookshelf integration failed: {search_result.title}")
+                download_job.error_message = "Download completed but could not trigger Audiobookshelf scan"
+                logger.warning(f"Download completed but Audiobookshelf scan failed: {search_result.title}")
             
             db.commit()
             
@@ -315,49 +316,43 @@ class DownloadManager:
             download_job.error_message = f"Processing failed: {str(e)}"
             db.commit()
     
-    async def _add_to_audiobookshelf(self, 
-                                   organization_result: Dict[str, Any], 
-                                   search_result: SearchResult) -> bool:
-        """Add organized audiobook to Audiobookshelf"""
+    async def delete_download_job(self, job_id: int, db: Session, delete_files: bool = True) -> bool:
+        """Delete a download job from database and optionally delete downloaded files"""
+        job = db.query(DownloadJob).filter(DownloadJob.id == job_id).first()
+        if not job:
+            logger.warning(f"Download job {job_id} not found")
+            return False
+        
         try:
-            # Get libraries
-            libraries = await audiobookshelf_client.get_libraries()
-            if not libraries:
-                logger.error("No libraries found in Audiobookshelf")
-                return False
+            # If the job has files and we want to delete them
+            if delete_files and job.download_path and os.path.exists(job.download_path):
+                try:
+                    if os.path.isfile(job.download_path):
+                        os.remove(job.download_path)
+                        logger.info(f"Deleted file: {job.download_path}")
+                    else:
+                        shutil.rmtree(job.download_path)
+                        logger.info(f"Deleted directory: {job.download_path}")
+                except Exception as e:
+                    logger.error(f"Failed to delete files for job {job_id}: {e}")
             
-            # Use the first library (you might want to make this configurable)
-            library = libraries[0]
+            # If the job has a torrent in qBittorrent, remove it
+            if job.torrent_hash:
+                try:
+                    await qbittorrent_client.delete_torrent(job.torrent_hash, delete_files=delete_files)
+                    logger.info(f"Deleted torrent {job.torrent_hash} from qBittorrent")
+                except Exception as e:
+                    logger.error(f"Failed to delete torrent for job {job_id}: {e}")
             
-            # Check if audiobook already exists
-            existing = await audiobookshelf_client.find_audiobook_by_title(
-                organization_result['title'],
-                organization_result['author']
-            )
+            # Delete the job from database
+            db.delete(job)
+            db.commit()
+            logger.info(f"Deleted download job {job_id} from database")
+            return True
             
-            if existing:
-                logger.info(f"Audiobook already exists in library: {organization_result['title']}")
-                return True
-            
-            # Add to library
-            result = await audiobookshelf_client.add_item_to_library(
-                library_id=library['id'],
-                folder_path=organization_result['library_path'],
-                title=organization_result['title'],
-                author=organization_result['author']
-            )
-            
-            if result:
-                # Trigger library scan
-                await audiobookshelf_client.scan_library(library['id'])
-                logger.info(f"Successfully added to Audiobookshelf: {organization_result['title']}")
-                return True
-            else:
-                logger.error(f"Failed to add to Audiobookshelf: {organization_result['title']}")
-                return False
-                
         except Exception as e:
-            logger.error(f"Audiobookshelf integration failed: {e}")
+            logger.error(f"Failed to delete download job {job_id}: {e}")
+            db.rollback()
             return False
     
     async def get_download_status(self, job_id: int, db: Session) -> Optional[Dict[str, Any]]:
@@ -436,35 +431,44 @@ class DownloadManager:
     
     async def cleanup_completed_downloads(self, db: Session, older_than_days: int = 7):
         """Clean up old completed, failed, and cancelled download records"""
-        from sqlalchemy import or_
         from datetime import datetime, timedelta
 
         cutoff_date = datetime.now() - timedelta(days=older_than_days)
 
         try:
-            # Find jobs to delete
+            # Find all jobs that are completed, failed, or cancelled and old enough
             jobs_to_delete = db.query(DownloadJob).filter(
                 DownloadJob.status.in_(['completed', 'cancelled', 'failed']),
-                or_(
-                    # If completed, use completed_at
-                    (DownloadJob.status == 'completed') & (DownloadJob.completed_at != None) & (DownloadJob.completed_at < cutoff_date),
-                    # Otherwise, use created_at
-                    (DownloadJob.status.in_(['failed', 'cancelled'])) & (DownloadJob.created_at < cutoff_date)
-                )
+                DownloadJob.created_at < cutoff_date
             ).all()
 
             deleted_count = 0
             for job in jobs_to_delete:
-                logger.info(f"Deleting old job {job.id} ({job.status}) created at {job.created_at} completed at {job.completed_at}")
+                logger.info(f"Cleaning up old job {job.id} ({job.status}) created at {job.created_at}")
+                
+                # Delete any remaining files in download_path
+                if job.download_path and os.path.exists(job.download_path):
+                    try:
+                        if os.path.isfile(job.download_path):
+                            os.remove(job.download_path)
+                        else:
+                            shutil.rmtree(job.download_path)
+                        logger.info(f"Deleted files for job {job.id}: {job.download_path}")
+                    except Exception as e:
+                        logger.warning(f"Could not delete files for job {job.id}: {e}")
+                
+                # Delete from database
                 db.delete(job)
                 deleted_count += 1
 
             db.commit()
             logger.info(f"Cleaned up {deleted_count} old download records (failed, cancelled, completed)")
+            return deleted_count
 
         except Exception as e:
             logger.error(f"Failed to cleanup download records: {e}")
             db.rollback()
+            return 0
 
 # Singleton instance
 download_manager = DownloadManager()

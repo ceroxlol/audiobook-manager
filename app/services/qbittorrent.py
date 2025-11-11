@@ -105,7 +105,6 @@ class QBittorrentClient:
     async def add_torrent(self, 
                          torrent_url: str, 
                          category: str = "audiobooks",
-                         save_path: str = None,
                          tags: List[str] = None) -> bool:
         """
         Add a torrent to qBittorrent
@@ -113,16 +112,11 @@ class QBittorrentClient:
         Args:
             torrent_url: Magnet URL or torrent file URL
             category: Category to assign
-            save_path: Custom save path
             tags: List of tags to apply
         """
-        if not save_path:
-            save_path = config.get('storage.download_path')
-        
         data = {
             'urls': torrent_url,
             'category': category,
-            #'savepath': save_path,
             'paused': 'false'
         }
         
@@ -131,7 +125,7 @@ class QBittorrentClient:
         
         try:
             result = await self._make_request('post', 'torrents/add', data=data)
-            logger.info(f"Successfully added torrent: {torrent_url[:100]}...")
+            logger.info(f"Successfully added torrent to category '{category}': {torrent_url[:100]}...")
             return True
         except Exception as e:
             logger.error(f"Failed to add torrent: {e}")
@@ -209,23 +203,20 @@ class QBittorrentClient:
             return False
     
     async def ensure_audiobooks_category(self) -> bool:
-        """Ensure audiobooks category exists with correct path"""
+        """Ensure audiobooks category exists (uses qBittorrent's default save path)"""
         try:
             categories = await self.get_categories()
-            target_path = config.get('storage.download_path')
             
             if 'audiobooks' not in categories:
-                logger.info(f"Creating audiobooks category with path: {target_path}")
-                return await self.create_category('audiobooks', target_path)
+                logger.info("Creating audiobooks category with qBittorrent's default path")
+                # Create category without specifying path - let qBittorrent use its default
+                params = {'category': 'audiobooks'}
+                await self._make_request('post', 'torrents/createCategory', params=params)
+                logger.info("Created audiobooks category")
+                return True
             else:
                 current_path = categories['audiobooks'].get('savePath', '')
                 logger.debug(f"Audiobooks category exists with path: {current_path}")
-                
-                # If path is different, we can't easily update it in qBittorrent
-                # Just log a warning and continue - the category exists which is what matters
-                if current_path != target_path:
-                    logger.warning(f"Audiobooks category path ({current_path}) differs from config ({target_path}). "
-                                 f"Torrents will be saved to the category's existing path.")
                 return True
         except Exception as e:
             logger.error(f"Failed to ensure audiobooks category: {e}")

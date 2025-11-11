@@ -108,9 +108,11 @@ class FileManager:
             if os.path.isfile(download_path):
                 download_dir = os.path.dirname(download_path)
                 is_single_file = True
+                logger.info(f"Single file download: {download_path}")
             else:
                 download_dir = download_path
                 is_single_file = False
+                logger.info(f"Directory download: {download_path}")
             
             # Get audio files to determine if this is an audiobook
             audio_files = self.get_audio_files(download_dir)
