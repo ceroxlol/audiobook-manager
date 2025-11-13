@@ -20,6 +20,7 @@ class SearchResult(Base):
     download_url = Column(Text)
     magnet_url = Column(Text)
     indexer = Column(String)
+    source = Column(String, default="prowlarr")  # Source: "prowlarr" or "audiobookbay"
     quality = Column(String)
     format = Column(String)
     languages = Column(Text)  # Store as JSON string instead of JSON type

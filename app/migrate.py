@@ -44,6 +44,12 @@ def migrate_database():
             print("Adding age_days column to search_results table...")
             cursor.execute("ALTER TABLE search_results ADD COLUMN age_days REAL")
         
+        if 'source' not in columns:
+            print("Adding source column to search_results table...")
+            cursor.execute("ALTER TABLE search_results ADD COLUMN source TEXT DEFAULT 'prowlarr'")
+            cursor.execute("UPDATE search_results SET source = 'prowlarr' WHERE source IS NULL")
+            print("Set all existing records to source='prowlarr'")
+        
         # Check download_jobs table
         cursor.execute("PRAGMA table_info(download_jobs)")
         download_job_columns = [column[1] for column in cursor.fetchall()]
