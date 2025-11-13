@@ -21,13 +21,20 @@ logger = logging.getLogger(__name__)
 @router.get("/search")
 async def search_audiobooks(
     query: str = Query(..., description="Search query for audiobooks"),
+    sources: Optional[str] = Query(None, description="Comma-separated list of sources: prowlarr,audiobookbay"),
     db: Session = Depends(get_db)
 ):
-    """Search for audiobooks via Prowlarr"""
+    """Search for audiobooks from multiple sources"""
     try:
-        results = await search_service.search_audiobooks(query, db)
+        # Parse sources parameter
+        source_list = None
+        if sources:
+            source_list = [s.strip() for s in sources.split(',') if s.strip()]
+        
+        results = await search_service.search_audiobooks(query, db, sources=source_list)
         return {
             "query": query,
+            "sources": source_list or ["prowlarr", "audiobookbay"],
             "results": results,
             "count": len(results)
         }
