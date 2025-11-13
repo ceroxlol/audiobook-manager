@@ -142,6 +142,22 @@
         box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
       }
 
+      .search-box select {
+        padding: 12px 16px;
+        border: 2px solid #e9ecef;
+        border-radius: 8px;
+        font-size: 1em;
+        background: white;
+        cursor: pointer;
+        transition: border-color 0.3s ease;
+      }
+
+      .search-box select:focus {
+        outline: none;
+        border-color: #007bff;
+        box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+      }
+
       .search-box button {
         padding: 12px 24px;
         background: #007bff;
@@ -198,17 +214,63 @@
       }
 
       .result-item {
-        border: 1px solid #e9ecef;
+        border: 2px solid #e9ecef;
         padding: 20px;
         border-radius: 8px;
         transition: all 0.3s ease;
         background: white;
+        position: relative;
       }
 
       .result-item:hover {
-        border-color: #007bff;
         box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
         transform: translateY(-2px);
+      }
+
+      /* Source-specific styling */
+      .result-item-prowlarr {
+        border-color: #007bff;
+        border-left-width: 4px;
+      }
+
+      .result-item-prowlarr:hover {
+        border-color: #0056b3;
+        box-shadow: 0 4px 12px rgba(0, 123, 255, 0.2);
+      }
+
+      .result-item-audiobookbay {
+        border-color: #9b59b6;
+        border-left-width: 4px;
+      }
+
+      .result-item-audiobookbay:hover {
+        border-color: #7d3c98;
+        box-shadow: 0 4px 12px rgba(155, 89, 182, 0.2);
+      }
+
+      /* Source badge */
+      .source-badge {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        padding: 4px 10px;
+        border-radius: 4px;
+        font-size: 0.75em;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+
+      .source-badge-prowlarr {
+        background: #e7f3ff;
+        color: #0056b3;
+        border: 1px solid #b3d9ff;
+      }
+
+      .source-badge-audiobookbay {
+        background: #f4ecf7;
+        color: #7d3c98;
+        border: 1px solid #d7bde2;
       }
 
       .result-header {
@@ -557,6 +619,11 @@
               id="searchInput"
               placeholder="Search for audiobooks (author, title, series...)"
             />
+            <select id="sourceSelector">
+              <option value="both">All Sources</option>
+              <option value="prowlarr">Prowlarr Only</option>
+              <option value="audiobookbay">AudiobookBay Only</option>
+            </select>
             <button id="searchBtn" onclick="searchAudiobooks()">Search</button>
           </div>
 
@@ -726,6 +793,7 @@
 
         const searchBtn = document.getElementById("searchBtn");
         const resultsDiv = document.getElementById("results");
+        const sourceSelector = document.getElementById("sourceSelector");
 
         searchBtn.textContent = "Searching...";
         searchBtn.disabled = true;
@@ -733,9 +801,15 @@
           '<div class="loading">Searching for audiobooks</div>';
 
         try {
-          const response = await fetch(
-            `/api/v1/search?query=${encodeURIComponent(query)}`
-          );
+          // Build URL with source parameter
+          let url = `/api/v1/search?query=${encodeURIComponent(query)}`;
+
+          const selectedSource = sourceSelector.value;
+          if (selectedSource !== "both") {
+            url += `&sources=${selectedSource}`;
+          }
+
+          const response = await fetch(url);
           const data = await response.json();
           displayResults(data.results);
 
@@ -761,9 +835,16 @@
         }
 
         resultsDiv.innerHTML = results
-          .map(
-            (result) => `
-                <div class="result-item">
+          .map((result) => {
+            const source = result.source || "prowlarr";
+            const sourceClass = `result-item-${source}`;
+            const badgeClass = `source-badge-${source}`;
+            const sourceName =
+              source === "prowlarr" ? "Prowlarr" : "AudiobookBay";
+
+            return `
+                <div class="result-item ${sourceClass}">
+                    <span class="source-badge ${badgeClass}">${sourceName}</span>
                     <div class="result-header">
                         <h3 class="result-title">${escapeHtml(
                           result.title
@@ -803,8 +884,8 @@
                         </button>
                     </div>
                 </div>
-            `
-          )
+            `;
+          })
           .join("");
       }
 
