@@ -14,9 +14,10 @@ class AudiobookBayClient:
     def __init__(self):
         self.enabled = config.get('integrations.audiobookbay.enabled', True)
         self.domain = config.get('integrations.audiobookbay.domain', 'audiobookbay.lu')
+        self.timeout = config.get('integrations.audiobookbay.timeout', 10)  # Default 10 seconds
         self.base_url = f"https://{self.domain}"
         self.session = None
-        logger.info(f"AudiobookBay client initialized for {self.base_url}")
+        logger.info(f"AudiobookBay client initialized for {self.base_url} (timeout: {self.timeout}s)")
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -50,7 +51,10 @@ class AudiobookBayClient:
             
             logger.debug(f"Making request to: {full_url}")
             
-            async with session.get(url, params=params, headers=headers, timeout=15) as response:
+            # Create timeout configuration
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            
+            async with session.get(url, params=params, headers=headers, timeout=timeout) as response:
                 if response.status == 200:
                     logger.debug(f"Request successful: {full_url}")
                     return await response.text()
@@ -58,7 +62,10 @@ class AudiobookBayClient:
                     logger.error(f"AudiobookBay request failed with status {response.status}: {full_url}")
                     return None
         except asyncio.TimeoutError:
-            logger.error(f"AudiobookBay request timed out: {url}")
+            logger.warning(f"AudiobookBay request timed out after {self.timeout}s: {url}")
+            return None
+        except aiohttp.ClientError as e:
+            logger.error(f"AudiobookBay client error at {url}: {type(e).__name__}: {e}")
             return None
         except Exception as e:
             logger.error(f"Error making request to AudiobookBay at {url}: {type(e).__name__}: {e}")
@@ -383,11 +390,22 @@ class AudiobookBayClient:
     
     async def test_connection(self) -> bool:
         """Test connection to AudiobookBay"""
+        if not self.enabled:
+            logger.info("AudiobookBay is disabled in configuration")
+            return False
+        
         try:
+            logger.debug(f"Testing connection to AudiobookBay at {self.base_url}")
             html = await self._make_request(self.base_url)
-            return html is not None and len(html) > 0
+            
+            if html is not None and len(html) > 0:
+                logger.info(f"AudiobookBay connection test successful: {self.base_url}")
+                return True
+            else:
+                logger.warning(f"AudiobookBay connection test failed: no content received from {self.base_url}")
+                return False
         except Exception as e:
-            logger.error(f"AudiobookBay connection test failed: {e}")
+            logger.error(f"AudiobookBay connection test failed for {self.base_url}: {type(e).__name__}: {e}")
             return False
 
 # Singleton instance
