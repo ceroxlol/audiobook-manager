@@ -728,6 +728,17 @@
             integrations.push("Audiobookshelf: ✅");
           else integrations.push("Audiobookshelf: ❌");
 
+          // Add AudiobookBay status
+          if (data.integrations.audiobookbay) {
+            if (data.integrations.audiobookbay.connected) {
+              const domain =
+                data.integrations.audiobookbay.active_domain || "unknown";
+              integrations.push(`AudiobookBay: ✅ (${domain})`);
+            } else {
+              integrations.push("AudiobookBay: ❌");
+            }
+          }
+
           if (integrations.length > 0) {
             statusDiv.textContent += " | " + integrations.join(" | ");
 

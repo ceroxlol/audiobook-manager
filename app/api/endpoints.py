@@ -10,6 +10,7 @@ from ..services.search import search_service
 from ..services.prowlarr import prowlarr_client
 from ..services.qbittorrent import qbittorrent_client
 from ..services.audiobookshelf import audiobookshelf_client
+from ..services.audiobookbay import audiobookbay_client
 from ..services.download_manager import download_manager
 from ..system_monitor import SystemMonitor
 from ..backup_manager import BackupManager
@@ -217,6 +218,7 @@ async def get_system_status():
         prowlarr_connected = await prowlarr_client.test_connection()
         qbittorrent_connected = await qbittorrent_client.test_connection()
         audiobookshelf_connected = await audiobookshelf_client.test_connection()
+        audiobookbay_connected = await audiobookbay_client.test_connection()
         
         # Get additional info
         download_speed = 0
@@ -226,6 +228,9 @@ async def get_system_status():
         libraries = []
         if audiobookshelf_connected:
             libraries = await audiobookshelf_client.get_libraries()
+        
+        # Get AudiobookBay active domain
+        audiobookbay_domain = audiobookbay_client.get_active_domain()
         
         status = "operational"
         if not all([prowlarr_connected, qbittorrent_connected, audiobookshelf_connected]):
@@ -248,6 +253,12 @@ async def get_system_status():
                     "status": "connected" if audiobookshelf_connected else "disconnected",
                     "libraries": len(libraries),
                     "library_names": [lib.get('name', 'Unknown') for lib in libraries]
+                },
+                "audiobookbay": {
+                    "connected": audiobookbay_connected,
+                    "status": "connected" if audiobookbay_connected else "disconnected",
+                    "active_domain": audiobookbay_domain if audiobookbay_connected else None,
+                    "available_domains": audiobookbay_client.domains if audiobookbay_client.enabled else []
                 }
             }
         }
@@ -258,7 +269,8 @@ async def get_system_status():
             "integrations": {
                 "prowlarr": {"connected": False, "status": "error"},
                 "qbittorrent": {"connected": False, "status": "error"},
-                "audiobookshelf": {"connected": False, "status": "error"}
+                "audiobookshelf": {"connected": False, "status": "error"},
+                "audiobookbay": {"connected": False, "status": "error"}
             }
         }
 
