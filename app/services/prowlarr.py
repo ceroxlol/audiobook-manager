@@ -31,20 +31,46 @@ class ProwlarrClient:
     
     async def _make_request_with_session(self, session: aiohttp.ClientSession, endpoint: str, params: Dict = None) -> Optional[Dict]:
         """Make request with existing session"""
+        url = None
         try:
             url = f"{self.base_url}/api/v1/{endpoint}"
             default_params = {'apikey': self.api_key}
             if params:
                 default_params.update(params)
             
+            logger.debug(f"Making Prowlarr request to: {url}")
+            
             async with session.get(url, params=default_params, timeout=30) as response:
                 if response.status == 200:
+                    logger.debug(f"Prowlarr request successful: {url}")
                     return await response.json()
                 else:
-                    logger.error(f"Prowlarr API error: {response.status} - {await response.text()}")
+                    # Get response body for error details
+                    response_text = await response.text()
+                    logger.error(
+                        f"Prowlarr API error: HTTP {response.status} at {url}\n"
+                        f"Response: {response_text[:500]}"  # Limit response text
+                    )
                     return None
+        except asyncio.TimeoutError:
+            logger.error(f"Prowlarr request timed out after 30s: {url}")
+            return None
+        except aiohttp.ClientConnectorError as e:
+            logger.error(
+                f"Prowlarr connection error at {url}: Cannot connect to {self.base_url}\n"
+                f"Error: {type(e).__name__}: {e}"
+            )
+            return None
+        except aiohttp.ClientError as e:
+            logger.error(
+                f"Prowlarr client error at {url}: {type(e).__name__}: {e}"
+            )
+            return None
         except Exception as e:
-            logger.error(f"Error making request to Prowlarr: {e}")
+            logger.error(
+                f"Unexpected error making request to Prowlarr at {url}: {type(e).__name__}: {e}",
+                exc_info=True  # Include full traceback
+            )
             return None
     
     async def search(self, query: str, categories: List[int] = None) -> List[Dict[str, Any]]:
@@ -64,11 +90,25 @@ class ProwlarrClient:
             'type': 'search'
         }
         
-        results = await self._make_request('search', params)
-        if not results:
-            return []
+        logger.info(f"Searching Prowlarr for: '{query}' (categories: {categories})")
         
-        return await self._filter_and_rank_results(results)
+        try:
+            results = await self._make_request('search', params)
+            if not results:
+                logger.warning(f"No results from Prowlarr for query: '{query}'")
+                return []
+            
+            logger.debug(f"Prowlarr returned {len(results)} raw results for: '{query}'")
+            filtered = await self._filter_and_rank_results(results)
+            logger.info(f"Prowlarr returned {len(filtered)} filtered results for: '{query}'")
+            
+            return filtered
+        except Exception as e:
+            logger.error(
+                f"Prowlarr search failed for query '{query}': {type(e).__name__}: {e}",
+                exc_info=True
+            )
+            return []
     
     async def _filter_and_rank_results(self, results: List[Dict]) -> List[Dict]:
         """Filter and rank search results for audiobooks"""
@@ -278,10 +318,20 @@ class ProwlarrClient:
     async def test_connection(self) -> bool:
         """Test connection to Prowlarr"""
         try:
+            logger.debug(f"Testing connection to Prowlarr at {self.base_url}")
             result = await self._make_request('system/status')
-            return result is not None
+            
+            if result is not None:
+                logger.info(f"Prowlarr connection test successful: {self.base_url}")
+                return True
+            else:
+                logger.warning(f"Prowlarr connection test failed: no valid response from {self.base_url}")
+                return False
         except Exception as e:
-            logger.error(f"Prowlarr connection test failed: {e}")
+            logger.error(
+                f"Prowlarr connection test failed for {self.base_url}: {type(e).__name__}: {e}",
+                exc_info=True
+            )
             return False
 
 # Singleton instance
