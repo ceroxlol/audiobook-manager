@@ -13,11 +13,21 @@ logger = logging.getLogger(__name__)
 class AudiobookBayClient:
     def __init__(self):
         self.enabled = config.get('integrations.audiobookbay.enabled', True)
-        self.domain = config.get('integrations.audiobookbay.domain', 'audiobookbay.lu')
+        
+        # Support both old 'domain' and new 'domains' config
+        domains_config = config.get('integrations.audiobookbay.domains', None)
+        if domains_config and isinstance(domains_config, list):
+            self.domains = domains_config
+        else:
+            # Fallback to old single domain config
+            single_domain = config.get('integrations.audiobookbay.domain', 'audiobookbay.lu')
+            self.domains = [single_domain]
+        
         self.timeout = config.get('integrations.audiobookbay.timeout', 10)  # Default 10 seconds
-        self.base_url = f"https://{self.domain}"
+        self.current_domain = None  # Will be set on first successful connection
         self.session = None
-        logger.info(f"AudiobookBay client initialized for {self.base_url} (timeout: {self.timeout}s)")
+        
+        logger.info(f"AudiobookBay client initialized with {len(self.domains)} domain(s): {', '.join(self.domains)} (timeout: {self.timeout}s)")
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -27,8 +37,55 @@ class AudiobookBayClient:
         if self.session:
             await self.session.close()
     
-    async def _make_request(self, url: str, params: Dict = None) -> Optional[str]:
-        """Make HTTP request and return HTML content"""
+    def _get_base_url(self, domain: str) -> str:
+        """Get base URL for a domain"""
+        return f"https://{domain}"
+    
+    async def _try_domains(self, url_path: str, params: Dict = None) -> Optional[tuple]:
+        """
+        Try each domain in sequence until one succeeds
+        Returns tuple of (html_content, successful_domain) or None
+        """
+        # Try current domain first if we have one
+        domains_to_try = []
+        if self.current_domain:
+            domains_to_try.append(self.current_domain)
+            # Add other domains after current one
+            domains_to_try.extend([d for d in self.domains if d != self.current_domain])
+        else:
+            domains_to_try = self.domains.copy()
+        
+        for domain in domains_to_try:
+            base_url = self._get_base_url(domain)
+            full_url = f"{base_url}{url_path}"
+            
+            logger.debug(f"Trying domain: {domain}")
+            html = await self._make_request_direct(full_url, params)
+            
+            if html:
+                # Success! Remember this domain
+                if self.current_domain != domain:
+                    logger.info(f"AudiobookBay: Switched to working domain: {domain}")
+                    self.current_domain = domain
+                return (html, domain)
+            else:
+                logger.debug(f"Domain {domain} failed, trying next...")
+        
+        logger.error(f"All AudiobookBay domains failed. Tried: {', '.join(domains_to_try)}")
+        return None
+    
+    async def _make_request(self, url_path: str, params: Dict = None) -> Optional[str]:
+        """
+        Make HTTP request with domain fallback
+        url_path should be the path after domain (e.g., "/" or "/page/1/")
+        """
+        result = await self._try_domains(url_path, params)
+        if result:
+            return result[0]  # Return just the HTML content
+        return None
+    
+    async def _make_request_direct(self, url: str, params: Dict = None) -> Optional[str]:
+        """Make HTTP request to a specific URL without domain fallback"""
         if not self.session:
             async with aiohttp.ClientSession() as session:
                 return await self._make_request_with_session(session, url, params)
@@ -85,21 +142,21 @@ class AudiobookBayClient:
         try:
             # Construct search URL - AudiobookBay uses WordPress search format
             # The search URL should be: https://domain.com/?s=query
-            search_url = f"{self.base_url}/"
+            url_path = "/"
             params = {'s': query}
             
-            logger.info(f"Searching AudiobookBay for: '{query}' at {search_url}?s={quote(query)}")
+            logger.info(f"Searching AudiobookBay for: '{query}'")
             
-            # Get search results page
-            html = await self._make_request(search_url, params)
+            # Get search results page (with domain fallback)
+            html = await self._make_request(url_path, params)
             if not html:
-                logger.warning("No response from AudiobookBay")
+                logger.warning(f"No response from any AudiobookBay domain for query: '{query}'")
                 return []
             
             # Parse results
             results = await self._parse_search_results(html, query)
             
-            logger.info(f"Found {len(results)} results from AudiobookBay for query: '{query}'")
+            logger.info(f"Found {len(results)} results from AudiobookBay (domain: {self.current_domain}) for query: '{query}'")
             return results
             
         except Exception as e:
@@ -157,7 +214,9 @@ class AudiobookBayClient:
             
             # Make sure we have absolute URL
             if detail_url and not detail_url.startswith('http'):
-                detail_url = urljoin(self.base_url, detail_url)
+                # Use current working domain
+                base_url = self._get_base_url(self.current_domain) if self.current_domain else self._get_base_url(self.domains[0])
+                detail_url = urljoin(base_url, detail_url)
             
             # Extract metadata from post content
             content = post_element.get_text()
@@ -215,7 +274,8 @@ class AudiobookBayClient:
             
             logger.debug(f"Fetching magnet link from: {detail_url}")
             
-            html = await self._make_request(detail_url)
+            # Use _make_request_direct since we have a full URL
+            html = await self._make_request_direct(detail_url)
             if not html:
                 logger.debug(f"No HTML content received from: {detail_url}")
                 return None
@@ -389,24 +449,31 @@ class AudiobookBayClient:
         return score
     
     async def test_connection(self) -> bool:
-        """Test connection to AudiobookBay"""
+        """Test connection to AudiobookBay (tries all domains)"""
         if not self.enabled:
             logger.info("AudiobookBay is disabled in configuration")
             return False
         
         try:
-            logger.debug(f"Testing connection to AudiobookBay at {self.base_url}")
-            html = await self._make_request(self.base_url)
+            logger.debug(f"Testing connection to AudiobookBay domains: {', '.join(self.domains)}")
             
-            if html is not None and len(html) > 0:
-                logger.info(f"AudiobookBay connection test successful: {self.base_url}")
+            # Try domains with fallback
+            result = await self._try_domains("/")
+            
+            if result:
+                html, domain = result
+                logger.info(f"AudiobookBay connection test successful: {domain}")
                 return True
             else:
-                logger.warning(f"AudiobookBay connection test failed: no content received from {self.base_url}")
+                logger.warning(f"AudiobookBay connection test failed: all domains unreachable")
                 return False
         except Exception as e:
-            logger.error(f"AudiobookBay connection test failed for {self.base_url}: {type(e).__name__}: {e}")
+            logger.error(f"AudiobookBay connection test failed: {type(e).__name__}: {e}")
             return False
+    
+    def get_active_domain(self) -> Optional[str]:
+        """Get the currently active domain (or None if not yet determined)"""
+        return self.current_domain
 
 # Singleton instance
 audiobookbay_client = AudiobookBayClient()
