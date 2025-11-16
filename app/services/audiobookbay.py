@@ -41,19 +41,27 @@ class AudiobookBayClient:
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
             }
             
-            logger.debug(f"Making request to: {url}")
+            # Build the full URL with parameters for logging
+            if params:
+                param_str = '&'.join([f"{k}={quote(str(v))}" for k, v in params.items()])
+                full_url = f"{url}?{param_str}"
+            else:
+                full_url = url
+            
+            logger.debug(f"Making request to: {full_url}")
             
             async with session.get(url, params=params, headers=headers, timeout=15) as response:
                 if response.status == 200:
+                    logger.debug(f"Request successful: {full_url}")
                     return await response.text()
                 else:
-                    logger.error(f"AudiobookBay request failed: {response.status}")
+                    logger.error(f"AudiobookBay request failed with status {response.status}: {full_url}")
                     return None
         except asyncio.TimeoutError:
             logger.error(f"AudiobookBay request timed out: {url}")
             return None
         except Exception as e:
-            logger.error(f"Error making request to AudiobookBay: {e}")
+            logger.error(f"Error making request to AudiobookBay at {url}: {type(e).__name__}: {e}")
             return None
     
     async def search(self, query: str) -> List[Dict[str, Any]]:
@@ -68,11 +76,12 @@ class AudiobookBayClient:
             return []
         
         try:
-            # Construct search URL
-            search_url = f"{self.base_url}/page/1/"
+            # Construct search URL - AudiobookBay uses WordPress search format
+            # The search URL should be: https://domain.com/?s=query
+            search_url = f"{self.base_url}/"
             params = {'s': query}
             
-            logger.info(f"Searching AudiobookBay for: {query}")
+            logger.info(f"Searching AudiobookBay for: '{query}' at {search_url}?s={quote(query)}")
             
             # Get search results page
             html = await self._make_request(search_url, params)
@@ -83,11 +92,11 @@ class AudiobookBayClient:
             # Parse results
             results = await self._parse_search_results(html, query)
             
-            logger.info(f"Found {len(results)} results from AudiobookBay")
+            logger.info(f"Found {len(results)} results from AudiobookBay for query: '{query}'")
             return results
             
         except Exception as e:
-            logger.error(f"AudiobookBay search failed: {e}")
+            logger.error(f"AudiobookBay search failed for query '{query}': {e}")
             return []
     
     async def _parse_search_results(self, html: str, query: str) -> List[Dict[str, Any]]:
@@ -197,8 +206,11 @@ class AudiobookBayClient:
             if not detail_url:
                 return None
             
+            logger.debug(f"Fetching magnet link from: {detail_url}")
+            
             html = await self._make_request(detail_url)
             if not html:
+                logger.debug(f"No HTML content received from: {detail_url}")
                 return None
             
             soup = BeautifulSoup(html, 'lxml')
@@ -207,19 +219,22 @@ class AudiobookBayClient:
             magnet_link = soup.find('a', href=re.compile(r'^magnet:\?'))
             
             if magnet_link:
-                return magnet_link.get('href')
+                magnet = magnet_link.get('href')
+                logger.debug(f"Found magnet link at {detail_url}")
+                return magnet
             
             # Alternative: look for any link containing 'magnet:'
             for link in soup.find_all('a', href=True):
                 href = link.get('href', '')
                 if href.startswith('magnet:'):
+                    logger.debug(f"Found magnet link (alternative search) at {detail_url}")
                     return href
             
             logger.debug(f"No magnet link found in detail page: {detail_url}")
             return None
             
         except Exception as e:
-            logger.debug(f"Error fetching magnet link from {detail_url}: {e}")
+            logger.error(f"Error fetching magnet link from {detail_url}: {type(e).__name__}: {e}")
             return None
     
     def _extract_author(self, title: str, content: str) -> str:
