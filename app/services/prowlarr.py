@@ -11,7 +11,9 @@ class ProwlarrClient:
     def __init__(self):
         self.base_url = f"http://{config.get('integrations.prowlarr.host')}:{config.get('integrations.prowlarr.port')}"
         self.api_key = config.get('integrations.prowlarr.api_key')
+        self.timeout = config.get('integrations.prowlarr.timeout', 30)  # Default 30 seconds
         self.session = None
+        logger.info(f"Prowlarr client initialized for {self.base_url} (timeout: {self.timeout}s)")
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -40,7 +42,10 @@ class ProwlarrClient:
             
             logger.debug(f"Making Prowlarr request to: {url}")
             
-            async with session.get(url, params=default_params, timeout=30) as response:
+            # Create timeout configuration
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            
+            async with session.get(url, params=default_params, timeout=timeout) as response:
                 if response.status == 200:
                     logger.debug(f"Prowlarr request successful: {url}")
                     return await response.json()
@@ -53,7 +58,7 @@ class ProwlarrClient:
                     )
                     return None
         except asyncio.TimeoutError:
-            logger.error(f"Prowlarr request timed out after 30s: {url}")
+            logger.error(f"Prowlarr request timed out after {self.timeout}s: {url}")
             return None
         except aiohttp.ClientConnectorError as e:
             logger.error(
