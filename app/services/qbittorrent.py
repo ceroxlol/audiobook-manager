@@ -103,7 +103,8 @@ class QBittorrentClient:
             raise Exception(f"qBittorrent API error: {response.status} - {error_text}")
     
     async def add_torrent(self, 
-                         torrent_url: str, 
+                         torrent_url: str = None,
+                         torrent_file: str = None,
                          category: str = "audiobooks",
                          tags: List[str] = None) -> bool:
         """
@@ -111,24 +112,83 @@ class QBittorrentClient:
         
         Args:
             torrent_url: Magnet URL or torrent file URL
+            torrent_file: Path to .torrent file
             category: Category to assign
             tags: List of tags to apply
         """
-        data = {
-            'urls': torrent_url,
-            'category': category,
-            'paused': 'false'
-        }
+        if torrent_file:
+            # Upload torrent file
+            return await self.add_torrent_file(torrent_file, category, tags)
+        elif torrent_url:
+            # Use URL/magnet
+            data = {
+                'urls': torrent_url,
+                'category': category,
+                'paused': 'false'
+            }
+            
+            if tags:
+                data['tags'] = ','.join(tags)
+            
+            try:
+                result = await self._make_request('post', 'torrents/add', data=data)
+                logger.info(f"Successfully added torrent to category '{category}': {torrent_url[:100]}...")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to add torrent: {e}")
+                return False
+        else:
+            logger.error("Either torrent_url or torrent_file must be provided")
+            return False
+    
+    async def add_torrent_file(self,
+                              torrent_file_path: str,
+                              category: str = "audiobooks",
+                              tags: List[str] = None) -> bool:
+        """
+        Add a torrent from a .torrent file
         
-        if tags:
-            data['tags'] = ','.join(tags)
-        
+        Args:
+            torrent_file_path: Path to the .torrent file
+            category: Category to assign
+            tags: List of tags to apply
+        """
         try:
-            result = await self._make_request('post', 'torrents/add', data=data)
-            logger.info(f"Successfully added torrent to category '{category}': {torrent_url[:100]}...")
-            return True
+            import os
+            if not os.path.exists(torrent_file_path):
+                logger.error(f"Torrent file not found: {torrent_file_path}")
+                return False
+            
+            await self._ensure_login()
+            
+            url = f"{self.base_url}/api/v2/torrents/add"
+            
+            # Prepare form data
+            data = aiohttp.FormData()
+            data.add_field('category', category)
+            data.add_field('paused', 'false')
+            
+            if tags:
+                data.add_field('tags', ','.join(tags))
+            
+            # Add the torrent file
+            with open(torrent_file_path, 'rb') as f:
+                data.add_field('torrents',
+                             f,
+                             filename=os.path.basename(torrent_file_path),
+                             content_type='application/x-bittorrent')
+            
+            async with self.session.post(url, data=data, cookies=self.cookies) as response:
+                if response.status == 200:
+                    logger.info(f"Successfully added torrent file to category '{category}': {torrent_file_path}")
+                    return True
+                else:
+                    error_text = await response.text()
+                    logger.error(f"Failed to add torrent file: HTTP {response.status} - {error_text}")
+                    return False
+                    
         except Exception as e:
-            logger.error(f"Failed to add torrent: {e}")
+            logger.error(f"Failed to add torrent file: {e}")
             return False
     
     async def get_torrents(self, 

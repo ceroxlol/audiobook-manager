@@ -42,34 +42,59 @@ class DownloadManager:
         db.add(download_job)
         db.commit()
         
+        torrent_file_path = None
+        
         try:
             # Ensure audiobooks category exists
             await qbittorrent_client.ensure_audiobooks_category()
             
-            # Get download URL (prefer magnet URL)
-            download_url = result.magnet_url or result.download_url
-            if not download_url:
-                logger.error(f"No download URL for result {search_result_id}")
-                download_job.status = "failed"
-                download_job.error_message = "No download URL available"
-                db.commit()
-                return download_job
-            
             # Create unique tag for this download
             unique_tag = f"audiobook-manager-{download_job.id}"
             
-            # Add to qBittorrent with better tagging
-            success = await qbittorrent_client.add_torrent(
-                torrent_url=download_url,
-                category="audiobooks",
-                tags=[unique_tag, "audiobook-manager"]  # Multiple tags for better tracking
-            )
-            
-            if not success:
-                download_job.status = "failed"
-                download_job.error_message = "Failed to add torrent to qBittorrent"
-                db.commit()
-                return download_job
+            # Check if this is an AudiobookBay result (has detail URL but no magnet)
+            if result.source == 'audiobookbay' and result.download_url and not result.magnet_url:
+                logger.info(f"AudiobookBay download detected for: {result.title}")
+                
+                # Import audiobookbay client
+                from .audiobookbay import audiobookbay_client
+                
+                # Download the .torrent file
+                temp_dir = config.get('storage.temp_path', '/tmp/audiobook-manager')
+                torrent_file_path = await audiobookbay_client.download_torrent_file(
+                    result.download_url,
+                    temp_dir
+                )
+                
+                if not torrent_file_path:
+                    raise Exception("Failed to download .torrent file from AudiobookBay")
+                
+                # Add torrent file to qBittorrent
+                success = await qbittorrent_client.add_torrent(
+                    torrent_file=torrent_file_path,
+                    category="audiobooks",
+                    tags=[unique_tag, "audiobook-manager"]
+                )
+                
+                if not success:
+                    raise Exception("Failed to add torrent file to qBittorrent")
+                
+                logger.info(f"Successfully added AudiobookBay torrent: {result.title}")
+                
+            else:
+                # Standard Prowlarr download (magnet or direct URL)
+                download_url = result.magnet_url or result.download_url
+                if not download_url:
+                    raise Exception("No download URL available")
+                
+                # Add to qBittorrent with better tagging
+                success = await qbittorrent_client.add_torrent(
+                    torrent_url=download_url,
+                    category="audiobooks",
+                    tags=[unique_tag, "audiobook-manager"]
+                )
+                
+                if not success:
+                    raise Exception("Failed to add torrent to qBittorrent")
             
             download_job.status = "downloading"
             db.commit()
@@ -87,6 +112,17 @@ class DownloadManager:
             download_job.error_message = str(e)
             db.commit()
             return download_job
+        
+        finally:
+            # Clean up torrent file if it was downloaded
+            if torrent_file_path:
+                try:
+                    import os
+                    if os.path.exists(torrent_file_path):
+                        os.remove(torrent_file_path)
+                        logger.debug(f"Deleted temporary torrent file: {torrent_file_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary torrent file {torrent_file_path}: {e}")
     
     async def _start_monitoring(self, job_id: int):
         """Start monitoring a download job"""

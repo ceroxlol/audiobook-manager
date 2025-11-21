@@ -281,12 +281,9 @@ class AudiobookBayClient:
             # Extract size (often in format like "Size: 123 MB")
             size = self._extract_size(content)
             
-            # Get magnet link (need to fetch detail page)
-            magnet_url = await self._get_magnet_link(detail_url)
-            
-            if not magnet_url:
-                logger.debug(f"No magnet link found for: {title}")
-                return None
+            # Store detail URL instead of fetching magnet link during search
+            # The magnet link will be fetched when user clicks download
+            logger.debug(f"Storing detail URL for: {title}")
             
             # Calculate score
             score = self._calculate_result_score(title, format_info, size)
@@ -299,8 +296,8 @@ class AudiobookBayClient:
                 'size': size,
                 'seeders': 0,  # AudiobookBay doesn't show seeders on search page
                 'leechers': 0,
-                'download_url': '',  # No direct download
-                'magnet_url': magnet_url,
+                'download_url': detail_url,  # Store detail URL here
+                'magnet_url': '',  # Will be fetched during download
                 'indexer': 'AudiobookBay',
                 'quality': quality,
                 'format': format_info,
@@ -313,65 +310,95 @@ class AudiobookBayClient:
             logger.debug(f"Error parsing single result: {e}")
             return None
     
-    async def _get_magnet_link(self, detail_url: str) -> Optional[str]:
-        """Fetch detail page and extract torrent download link"""
+    async def download_torrent_file(self, detail_url: str, save_path: str) -> Optional[str]:
+        """Download .torrent file from AudiobookBay detail page
+        
+        Args:
+            detail_url: URL to the audiobook detail page
+            save_path: Directory to save the .torrent file
+            
+        Returns:
+            Path to downloaded .torrent file, or None if failed
+        """
         try:
             if not detail_url:
+                logger.error("No detail URL provided")
                 return None
             
-            logger.debug(f"Fetching torrent link from: {detail_url}")
+            logger.info(f"Fetching torrent download link from: {detail_url}")
             
-            # Use _make_request_direct since we have a full URL
+            # Fetch the detail page
             html = await self._make_request_direct(detail_url)
             if not html:
-                logger.debug(f"No HTML content received from: {detail_url}")
+                logger.error(f"No HTML content received from: {detail_url}")
                 return None
             
             soup = BeautifulSoup(html, 'lxml')
             
-            # Look for torrent download link in the table
+            # Look for torrent download link
             # Pattern: <a href='/downld0?downfs=...'>
             torrent_link = soup.find('a', href=re.compile(r'^/downld0\?downfs='))
             
-            if torrent_link:
-                torrent_path = torrent_link.get('href')
-                # Make absolute URL
-                base_url = self.current_base_url if self.current_base_url else self._get_base_url_from_domain(self.domains[0])
-                torrent_url = urljoin(base_url, torrent_path)
-                logger.debug(f"Found torrent download link at {detail_url}")
-                
-                # Fetch the torrent download page to get actual magnet link
-                torrent_html = await self._make_request_direct(torrent_url)
-                if torrent_html:
-                    torrent_soup = BeautifulSoup(torrent_html, 'lxml')
-                    
-                    # Look for magnet link
-                    magnet_link = torrent_soup.find('a', href=re.compile(r'^magnet:\?'))
-                    if magnet_link:
-                        magnet = magnet_link.get('href')
-                        logger.debug(f"Found magnet link from torrent page")
-                        return magnet
-                    
-                    # Alternative: look for any link containing 'magnet:'
-                    for link in torrent_soup.find_all('a', href=True):
-                        href = link.get('href', '')
-                        if href.startswith('magnet:'):
-                            logger.debug(f"Found magnet link (alternative search) from torrent page")
-                            return href
+            if not torrent_link:
+                logger.error(f"No torrent download link found at {detail_url}")
+                return None
             
-            # Fallback: try to find magnet link directly on detail page
-            magnet_link = soup.find('a', href=re.compile(r'^magnet:\?'))
-            if magnet_link:
-                magnet = magnet_link.get('href')
-                logger.debug(f"Found magnet link directly at {detail_url}")
-                return magnet
+            torrent_path = torrent_link.get('href')
+            # Make absolute URL
+            base_url = self.current_base_url if self.current_base_url else self._get_base_url_from_domain(self.domains[0])
+            torrent_url = urljoin(base_url, torrent_path)
+            logger.info(f"Found torrent download URL: {torrent_url}")
             
-            logger.debug(f"No magnet/torrent link found in detail page: {detail_url}")
-            return None
+            # Download the .torrent file
+            import os
+            os.makedirs(save_path, exist_ok=True)
+            
+            # Generate filename from detail URL
+            import hashlib
+            url_hash = hashlib.md5(detail_url.encode()).hexdigest()[:8]
+            torrent_file_path = os.path.join(save_path, f"audiobook_{url_hash}.torrent")
+            
+            logger.info(f"Downloading .torrent file to: {torrent_file_path}")
+            
+            # Download the torrent file
+            if not self.session:
+                async with aiohttp.ClientSession() as session:
+                    torrent_content = await self._download_file_with_session(session, torrent_url)
+            else:
+                torrent_content = await self._download_file_with_session(self.session, torrent_url)
+            
+            if not torrent_content:
+                logger.error(f"Failed to download torrent file from {torrent_url}")
+                return None
+            
+            # Save the torrent file
+            with open(torrent_file_path, 'wb') as f:
+                f.write(torrent_content)
+            
+            logger.info(f"Successfully downloaded .torrent file: {torrent_file_path}")
+            return torrent_file_path
             
         except Exception as e:
-            logger.error(f"Error fetching torrent link from {detail_url}: {type(e).__name__}: {e}")
-            # Domain reset is handled at the request level if needed
+            logger.error(f"Error downloading torrent file from {detail_url}: {type(e).__name__}: {e}")
+            return None
+    
+    async def _download_file_with_session(self, session: aiohttp.ClientSession, url: str) -> Optional[bytes]:
+        """Download a file and return its content as bytes"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            
+            async with session.get(url, headers=headers, timeout=timeout) as response:
+                if response.status == 200:
+                    return await response.read()
+                else:
+                    logger.error(f"Failed to download file: HTTP {response.status}")
+                    return None
+        except Exception as e:
+            logger.error(f"Error downloading file from {url}: {type(e).__name__}: {e}")
             return None
     
     def _extract_author(self, title: str, content: str) -> str:
