@@ -609,7 +609,7 @@ class AudiobookBayClient:
             logger.info(f"Attempting to login to AudiobookBay at {self.current_base_url}")
             
             # AudiobookBay login URL (WordPress standard)
-            login_url = f"{self.current_base_url}/wp-login.php"
+            login_url = f"{self.current_base_url}/member/login.php"
             
             # Prepare login data
             login_data = {
