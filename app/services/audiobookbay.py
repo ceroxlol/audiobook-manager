@@ -175,10 +175,11 @@ class AudiobookBayClient:
         try:
             # Construct search URL - AudiobookBay uses WordPress search format
             # The search URL should be: https://domain.com/?s=query
+            # Convert query to lowercase to avoid nginx issues
             url_path = "/"
-            params = {'s': query, 'cat': 'undefined,undefined'}
+            params = {'s': query.lower(), 'cat': 'undefined,undefined'}
             
-            logger.info(f"Searching AudiobookBay for: '{query}' (base URL: {self.current_base_url})")
+            logger.info(f"Searching AudiobookBay for: '{query}' (lowercase: '{query.lower()}', base URL: {self.current_base_url})")
             
             # Get search results page (with domain fallback)
             html = await self._make_request(url_path, params)
@@ -187,10 +188,22 @@ class AudiobookBayClient:
                 return []
             
             # Parse results
-            results = await self._parse_search_results(html, query)
+            all_results = await self._parse_search_results(html, query)
             
-            logger.info(f"Found {len(results)} results from AudiobookBay (base URL: {self.current_base_url}) for query: '{query}'")
-            return results
+            # Filter results to only include titles that match the search term
+            # AudiobookBay returns many unrelated results (like top 100), so we filter by search term
+            search_terms = query.lower().split()
+            filtered_results = []
+            for result in all_results:
+                title_lower = result['title'].lower()
+                # Check if any search term appears in the title
+                if any(term in title_lower for term in search_terms):
+                    filtered_results.append(result)
+                else:
+                    logger.debug(f"Filtered out result: '{result['title']}' (doesn't match search term '{query}')")
+            
+            logger.info(f"Found {len(filtered_results)} matching results (filtered from {len(all_results)} total) from AudiobookBay (base URL: {self.current_base_url}) for query: '{query}'")
+            return filtered_results
             
         except Exception as e:
             logger.error(f"AudiobookBay search failed for query '{query}': {type(e).__name__}: {e}")
