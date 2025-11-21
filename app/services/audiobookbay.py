@@ -74,9 +74,9 @@ class AudiobookBayClient:
         for domain in self.domains:
             for protocol in ['http', 'https']:
                 base_url = self._get_base_url_from_domain(domain, protocol)
-                urls_to_try.append((f"{base_url}{url_path}", base_url))
-
-        logger.info(f"Testing {len(urls_to_try)} AudiobookBay URLs in parallel (HTTP preferred)")
+                full_url = f"{base_url}{url_path}"
+                urls_to_try.append((full_url, base_url))
+        logger.info(f"Testing {len(urls_to_try)} AudiobookBay URLs in parallel (HTTP preferred): {[url for url, _ in urls_to_try]}")
 
         async def try_url(url: str, base_url: str):
             try:
@@ -178,7 +178,7 @@ class AudiobookBayClient:
             url_path = "/"
             params = {'s': query}
             
-            logger.info(f"Searching AudiobookBay for: '{query}'")
+            logger.info(f"Searching AudiobookBay for: '{query}' (base URL: {self.current_base_url})")
             
             # Get search results page (with domain fallback)
             html = await self._make_request(url_path, params)
