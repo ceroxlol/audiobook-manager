@@ -356,6 +356,71 @@ async def get_system_health():
             "error": str(e)
         }
     
+@router.get("/audiobookbay/domains")
+async def get_audiobookbay_domains():
+    """Get all available AudiobookBay domains with their status"""
+    try:
+        statuses = await audiobookbay_client.get_domain_statuses()
+        return {
+            "domains": statuses,
+            "current_domain": audiobookbay_client.get_active_domain(),
+            "logged_in": audiobookbay_client.is_logged_in()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get AudiobookBay domains: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get domains: {str(e)}")
+
+@router.post("/audiobookbay/domain/select")
+async def select_audiobookbay_domain(
+    domain: str = Query(..., description="Domain to select (e.g., audiobookbay.fi)"),
+    protocol: str = Query('http', description="Protocol to use (http or https)")
+):
+    """Manually select a specific AudiobookBay domain and protocol"""
+    try:
+        if protocol not in ['http', 'https']:
+            raise HTTPException(status_code=400, detail="Protocol must be 'http' or 'https'")
+        
+        success = await audiobookbay_client.set_domain(domain, protocol)
+        if success:
+            return {
+                "message": f"Successfully set domain to {protocol}://{domain}",
+                "current_domain": audiobookbay_client.get_active_domain(),
+                "logged_in": audiobookbay_client.is_logged_in()
+            }
+        else:
+            raise HTTPException(status_code=400, detail=f"Failed to set domain to {protocol}://{domain} (not responding or not in configured list)")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to select AudiobookBay domain: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to select domain: {str(e)}")
+
+@router.post("/audiobookbay/domain/reset")
+async def reset_audiobookbay_domain():
+    """Reset the current AudiobookBay domain selection to trigger re-testing"""
+    try:
+        audiobookbay_client.reset_domain()
+        return {
+            "message": "AudiobookBay domain selection has been reset",
+            "current_domain": None
+        }
+    except Exception as e:
+        logger.error(f"Failed to reset AudiobookBay domain: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to reset domain: {str(e)}")
+
+@router.get("/audiobookbay/login/status")
+async def get_audiobookbay_login_status():
+    """Get AudiobookBay login status"""
+    try:
+        return {
+            "logged_in": audiobookbay_client.is_logged_in(),
+            "login_enabled": bool(audiobookbay_client.username and audiobookbay_client.password),
+            "current_domain": audiobookbay_client.get_active_domain()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get AudiobookBay login status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get login status: {str(e)}")
+
 @router.get("/debug/qbittorrent")
 async def debug_qbittorrent():
     """Debug endpoint to check qBittorrent status"""

@@ -24,10 +24,13 @@ class AudiobookBayClient:
             self.domains = [single_domain]
         
         self.timeout = config.get('integrations.audiobookbay.timeout', 10)  # Default 10 seconds
+        self.username = config.get('integrations.audiobookbay.username', '')
+        self.password = config.get('integrations.audiobookbay.password', '')
         self.current_base_url = None  # Will store successful protocol+domain (e.g., "http://audiobookbay.fi")
+        self.logged_in = False
         self.session = None
         
-        logger.info(f"AudiobookBay client initialized with {len(self.domains)} domain(s): {', '.join(self.domains)} (timeout: {self.timeout}s)")
+        logger.info(f"AudiobookBay client initialized with {len(self.domains)} domain(s): {', '.join(self.domains)} (timeout: {self.timeout}s, login: {'enabled' if self.username else 'disabled'})")
     
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -81,6 +84,11 @@ class AudiobookBayClient:
                 if self.current_base_url != successful_base_url:
                     logger.info(f"AudiobookBay: Using working URL: {successful_base_url}")
                     self.current_base_url = successful_base_url
+                    
+                    # Try to login if credentials are configured and not already logged in
+                    if self.username and self.password and not self.logged_in:
+                        await self._login()
+                
                 return result
 
         logger.error(f"All AudiobookBay URLs failed. Tried {len(urls_to_try)} combinations")
@@ -521,6 +529,149 @@ class AudiobookBayClient:
             # Extract just the domain from the full URL for display
             return self.current_base_url.replace('https://', '').replace('http://', '')
         return None
+    
+    def reset_domain(self):
+        """Reset the current domain selection to force re-testing"""
+        logger.info(f"Resetting AudiobookBay domain selection (was: {self.current_base_url})")
+        self.current_base_url = None
+        self.logged_in = False
+    
+    async def set_domain(self, domain: str, protocol: str = 'http') -> bool:
+        """Manually set a specific domain and protocol"""
+        if domain not in self.domains:
+            logger.error(f"Domain {domain} not in configured domains list")
+            return False
+        
+        base_url = self._get_base_url_from_domain(domain, protocol)
+        logger.info(f"Manually setting AudiobookBay domain to: {base_url}")
+        
+        # Test the domain
+        try:
+            html = await self._make_request_direct(f"{base_url}/")
+            if html:
+                self.current_base_url = base_url
+                logger.info(f"Domain {base_url} is working")
+                
+                # Try to login if credentials are configured
+                if self.username and self.password:
+                    await self._login()
+                
+                return True
+            else:
+                logger.warning(f"Domain {base_url} is not responding")
+                return False
+        except Exception as e:
+            logger.error(f"Failed to test domain {base_url}: {e}")
+            return False
+    
+    async def get_domain_statuses(self) -> List[Dict[str, Any]]:
+        """Test all configured domains and return their status"""
+        statuses = []
+        
+        for domain in self.domains:
+            for protocol in ['http', 'https']:
+                base_url = self._get_base_url_from_domain(domain, protocol)
+                status = {
+                    'domain': domain,
+                    'protocol': protocol,
+                    'url': base_url,
+                    'working': False,
+                    'current': self.current_base_url == base_url
+                }
+                
+                try:
+                    html = await self._make_request_direct(f"{base_url}/")
+                    if html:
+                        status['working'] = True
+                except Exception as e:
+                    status['error'] = str(e)
+                
+                statuses.append(status)
+        
+        return statuses
+    
+    async def _login(self) -> bool:
+        """Login to AudiobookBay with configured credentials"""
+        if not self.username or not self.password:
+            logger.debug("No AudiobookBay credentials configured, skipping login")
+            return False
+        
+        if not self.current_base_url:
+            logger.warning("Cannot login: no working domain established")
+            return False
+        
+        try:
+            logger.info(f"Attempting to login to AudiobookBay at {self.current_base_url}")
+            
+            # AudiobookBay login URL (WordPress standard)
+            login_url = f"{self.current_base_url}/wp-login.php"
+            
+            # Prepare login data
+            login_data = {
+                'log': self.username,
+                'pwd': self.password,
+                'wp-submit': 'Log In',
+                'redirect_to': self.current_base_url,
+                'testcookie': '1'
+            }
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Referer': login_url
+            }
+            
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            
+            if not self.session:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(login_url, data=login_data, headers=headers, timeout=timeout, allow_redirects=True) as response:
+                        if response.status == 200:
+                            # Check if login was successful by looking for error messages
+                            html = await response.text()
+                            if 'login_error' in html.lower() or 'incorrect' in html.lower():
+                                logger.error("AudiobookBay login failed: incorrect username or password")
+                                self.logged_in = False
+                                return False
+                            
+                            logger.info("AudiobookBay login successful")
+                            self.logged_in = True
+                            
+                            # Note: cookies are stored in the session automatically
+                            return True
+                        else:
+                            logger.error(f"AudiobookBay login failed with status {response.status}")
+                            self.logged_in = False
+                            return False
+            else:
+                async with self.session.post(login_url, data=login_data, headers=headers, timeout=timeout, allow_redirects=True) as response:
+                    if response.status == 200:
+                        html = await response.text()
+                        if 'login_error' in html.lower() or 'incorrect' in html.lower():
+                            logger.error("AudiobookBay login failed: incorrect username or password")
+                            self.logged_in = False
+                            return False
+                        
+                        logger.info("AudiobookBay login successful")
+                        self.logged_in = True
+                        return True
+                    else:
+                        logger.error(f"AudiobookBay login failed with status {response.status}")
+                        self.logged_in = False
+                        return False
+                        
+        except asyncio.TimeoutError:
+            logger.error(f"AudiobookBay login timed out after {self.timeout}s")
+            self.logged_in = False
+            return False
+        except Exception as e:
+            logger.error(f"AudiobookBay login error: {type(e).__name__}: {e}")
+            self.logged_in = False
+            return False
+    
+    def is_logged_in(self) -> bool:
+        """Check if currently logged in"""
+        return self.logged_in
 
 # Singleton instance
 audiobookbay_client = AudiobookBayClient()
