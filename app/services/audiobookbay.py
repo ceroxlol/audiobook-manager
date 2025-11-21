@@ -46,25 +46,37 @@ class AudiobookBayClient:
     
     async def _try_domains_parallel(self, url_path: str, params: Dict = None) -> Optional[tuple]:
         """
-        Try all domains in parallel (prefer HTTP, then HTTPS) and return first successful response
+        Try current domain first, then try all other domains in parallel if it fails
         Returns tuple of (html_content, successful_base_url) or None
         """
-        urls_to_try = []
-
-        # If we have a working base URL, try it first
+        # If we have a working base URL, try it first exclusively
         if self.current_base_url:
-            urls_to_try.append((f"{self.current_base_url}{url_path}", self.current_base_url))
-
-        # For each domain, try HTTP first, then HTTPS
+            current_url = f"{self.current_base_url}{url_path}"
+            logger.debug(f"Trying current AudiobookBay URL: {current_url}")
+            try:
+                html = await self._make_request_direct(current_url, params)
+                if html:
+                    logger.debug(f"Current domain still working: {self.current_base_url}")
+                    return (html, self.current_base_url)
+                else:
+                    # Current domain failed, reset and try alternatives
+                    logger.warning(f"Current domain {self.current_base_url} failed, resetting and trying alternatives")
+                    self.current_base_url = None
+                    self.logged_in = False
+            except Exception as e:
+                # Current domain had an error, reset and try alternatives
+                logger.warning(f"Current domain {self.current_base_url} error: {type(e).__name__}: {e}. Resetting and trying alternatives")
+                self.current_base_url = None
+                self.logged_in = False
+        
+        # Build list of alternative URLs to try (only if current failed or not set)
+        urls_to_try = []
         for domain in self.domains:
             for protocol in ['http', 'https']:
                 base_url = self._get_base_url_from_domain(domain, protocol)
-                full_url = f"{base_url}{url_path}"
-                # Skip if already added as current
-                if base_url != self.current_base_url:
-                    urls_to_try.append((full_url, base_url))
+                urls_to_try.append((f"{base_url}{url_path}", base_url))
 
-        logger.debug(f"Testing {len(urls_to_try)} AudiobookBay URLs in parallel (HTTP preferred)")
+        logger.info(f"Testing {len(urls_to_try)} AudiobookBay URLs in parallel (HTTP preferred)")
 
         async def try_url(url: str, base_url: str):
             try:
@@ -72,7 +84,7 @@ class AudiobookBayClient:
                 if html:
                     return (html, base_url)
             except Exception as e:
-                logger.debug(f"Failed to fetch {url}: {e}")
+                logger.debug(f"Failed to fetch {url}: {type(e).__name__}")
             return None
 
         tasks = [try_url(url, base) for url, base in urls_to_try]
@@ -81,17 +93,18 @@ class AudiobookBayClient:
             result = await coro
             if result:
                 html, successful_base_url = result
-                if self.current_base_url != successful_base_url:
-                    logger.info(f"AudiobookBay: Using working URL: {successful_base_url}")
-                    self.current_base_url = successful_base_url
-                    
-                    # Try to login if credentials are configured and not already logged in
-                    if self.username and self.password and not self.logged_in:
-                        await self._login()
+                logger.info(f"AudiobookBay: Found working URL: {successful_base_url}")
+                self.current_base_url = successful_base_url
+                
+                # Try to login if credentials are configured and not already logged in
+                if self.username and self.password and not self.logged_in:
+                    await self._login()
                 
                 return result
 
         logger.error(f"All AudiobookBay URLs failed. Tried {len(urls_to_try)} combinations")
+        self.current_base_url = None
+        self.logged_in = False
         return None
     
     async def _make_request(self, url_path: str, params: Dict = None) -> Optional[str]:
@@ -179,13 +192,9 @@ class AudiobookBayClient:
             logger.info(f"Found {len(results)} results from AudiobookBay (base URL: {self.current_base_url}) for query: '{query}'")
             return results
             
-        except asyncio.TimeoutError:
-            # Reset domain on timeout to trigger new domain search next time
-            logger.warning(f"AudiobookBay search timed out for '{query}', resetting domain selection")
-            self.current_base_url = None
-            return []
         except Exception as e:
-            logger.error(f"AudiobookBay search failed for query '{query}': {e}")
+            logger.error(f"AudiobookBay search failed for query '{query}': {type(e).__name__}: {e}")
+            # Domain reset is handled in _try_domains_parallel
             return []
     
     async def _parse_search_results(self, html: str, query: str) -> List[Dict[str, Any]]:
@@ -347,13 +356,9 @@ class AudiobookBayClient:
             logger.debug(f"No magnet/torrent link found in detail page: {detail_url}")
             return None
             
-        except asyncio.TimeoutError:
-            logger.warning(f"Timeout fetching torrent link from {detail_url}")
-            # Reset domain on timeout
-            self.current_base_url = None
-            return None
         except Exception as e:
             logger.error(f"Error fetching torrent link from {detail_url}: {type(e).__name__}: {e}")
+            # Domain reset is handled at the request level if needed
             return None
     
     def _extract_author(self, title: str, content: str) -> str:
