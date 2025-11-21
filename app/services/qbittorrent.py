@@ -163,7 +163,11 @@ class QBittorrentClient:
             
             url = f"{self.base_url}/api/v2/torrents/add"
             
-            # Prepare form data
+            # Read the file content first
+            with open(torrent_file_path, 'rb') as f:
+                torrent_content = f.read()
+            
+            # Prepare form data with the file content
             data = aiohttp.FormData()
             data.add_field('category', category)
             data.add_field('paused', 'false')
@@ -171,12 +175,11 @@ class QBittorrentClient:
             if tags:
                 data.add_field('tags', ','.join(tags))
             
-            # Add the torrent file
-            with open(torrent_file_path, 'rb') as f:
-                data.add_field('torrents',
-                             f,
-                             filename=os.path.basename(torrent_file_path),
-                             content_type='application/x-bittorrent')
+            # Add the torrent file content
+            data.add_field('torrents',
+                         torrent_content,
+                         filename=os.path.basename(torrent_file_path),
+                         content_type='application/x-bittorrent')
             
             async with self.session.post(url, data=data, cookies=self.cookies) as response:
                 if response.status == 200:
