@@ -397,7 +397,32 @@ class AudiobookBayClient:
             
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             
-            async with session.get(url, headers=headers, timeout=timeout) as response:
+            # Follow redirects and handle potential login redirects
+            async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as response:
+                # Check if we were redirected to a login page
+                final_url = str(response.url)
+                if 'login' in final_url.lower() or 'member' in final_url.lower():
+                    logger.warning(f"Download URL redirected to login page: {final_url}")
+                    
+                    # If we have credentials and aren't logged in, try to login
+                    if self.username and self.password and not self.logged_in:
+                        logger.info("Attempting to login before downloading")
+                        login_success = await self._login()
+                        if login_success:
+                            # Retry the download after login
+                            async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as retry_response:
+                                if retry_response.status == 200:
+                                    return await retry_response.read()
+                                else:
+                                    logger.error(f"Failed to download file after login: HTTP {retry_response.status}")
+                                    return None
+                        else:
+                            logger.error("Login failed, cannot download torrent file (login required)")
+                            return None
+                    else:
+                        logger.error("Download requires login but no credentials configured or already logged in")
+                        return None
+                
                 if response.status == 200:
                     return await response.read()
                 else:
