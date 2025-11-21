@@ -24,7 +24,7 @@ class AudiobookBayClient:
             self.domains = [single_domain]
         
         self.timeout = config.get('integrations.audiobookbay.timeout', 10)  # Default 10 seconds
-        self.current_domain = None  # Will be set on first successful connection
+        self.current_base_url = None  # Will store successful protocol+domain (e.g., "http://audiobookbay.fi")
         self.session = None
         
         logger.info(f"AudiobookBay client initialized with {len(self.domains)} domain(s): {', '.join(self.domains)} (timeout: {self.timeout}s)")
@@ -37,41 +37,59 @@ class AudiobookBayClient:
         if self.session:
             await self.session.close()
     
-    def _get_base_url(self, domain: str) -> str:
-        """Get base URL for a domain"""
-        return f"https://{domain}"
+    def _get_base_url_from_domain(self, domain: str, protocol: str = "https") -> str:
+        """Get base URL for a domain with specified protocol"""
+        return f"{protocol}://{domain}"
     
-    async def _try_domains(self, url_path: str, params: Dict = None) -> Optional[tuple]:
+    async def _try_domains_parallel(self, url_path: str, params: Dict = None) -> Optional[tuple]:
         """
-        Try each domain in sequence until one succeeds
-        Returns tuple of (html_content, successful_domain) or None
+        Try all domains in parallel (both HTTP and HTTPS) and return first successful response
+        Returns tuple of (html_content, successful_base_url) or None
         """
-        # Try current domain first if we have one
-        domains_to_try = []
-        if self.current_domain:
-            domains_to_try.append(self.current_domain)
-            # Add other domains after current one
-            domains_to_try.extend([d for d in self.domains if d != self.current_domain])
-        else:
-            domains_to_try = self.domains.copy()
+        # Build list of all URLs to try (both http and https for each domain)
+        urls_to_try = []
         
-        for domain in domains_to_try:
-            base_url = self._get_base_url(domain)
-            full_url = f"{base_url}{url_path}"
-            
-            logger.debug(f"Trying domain: {domain}")
-            html = await self._make_request_direct(full_url, params)
-            
-            if html:
-                # Success! Remember this domain
-                if self.current_domain != domain:
-                    logger.info(f"AudiobookBay: Switched to working domain: {domain}")
-                    self.current_domain = domain
-                return (html, domain)
-            else:
-                logger.debug(f"Domain {domain} failed, trying next...")
+        # If we have a working base URL, try it first
+        if self.current_base_url:
+            urls_to_try.append((f"{self.current_base_url}{url_path}", self.current_base_url))
         
-        logger.error(f"All AudiobookBay domains failed. Tried: {', '.join(domains_to_try)}")
+        # Add all domain+protocol combinations
+        for domain in self.domains:
+            for protocol in ['https', 'http']:
+                base_url = self._get_base_url_from_domain(domain, protocol)
+                full_url = f"{base_url}{url_path}"
+                # Skip if already added as current
+                if base_url != self.current_base_url:
+                    urls_to_try.append((full_url, base_url))
+        
+        logger.debug(f"Testing {len(urls_to_try)} AudiobookBay URLs in parallel")
+        
+        # Create tasks for all URLs
+        async def try_url(url: str, base_url: str):
+            try:
+                html = await self._make_request_direct(url, params)
+                if html:
+                    return (html, base_url)
+            except Exception as e:
+                logger.debug(f"Failed to fetch {url}: {e}")
+            return None
+        
+        tasks = [try_url(url, base) for url, base in urls_to_try]
+        
+        # Wait for first successful response
+        for coro in asyncio.as_completed(tasks):
+            result = await coro
+            if result:
+                html, successful_base_url = result
+                
+                # Update current base URL if changed
+                if self.current_base_url != successful_base_url:
+                    logger.info(f"AudiobookBay: Using working URL: {successful_base_url}")
+                    self.current_base_url = successful_base_url
+                
+                return result
+        
+        logger.error(f"All AudiobookBay URLs failed. Tried {len(urls_to_try)} combinations")
         return None
     
     async def _make_request(self, url_path: str, params: Dict = None) -> Optional[str]:
@@ -79,7 +97,7 @@ class AudiobookBayClient:
         Make HTTP request with domain fallback
         url_path should be the path after domain (e.g., "/" or "/page/1/")
         """
-        result = await self._try_domains(url_path, params)
+        result = await self._try_domains_parallel(url_path, params)
         if result:
             return result[0]  # Return just the HTML content
         return None
@@ -156,9 +174,14 @@ class AudiobookBayClient:
             # Parse results
             results = await self._parse_search_results(html, query)
             
-            logger.info(f"Found {len(results)} results from AudiobookBay (domain: {self.current_domain}) for query: '{query}'")
+            logger.info(f"Found {len(results)} results from AudiobookBay (base URL: {self.current_base_url}) for query: '{query}'")
             return results
             
+        except asyncio.TimeoutError:
+            # Reset domain on timeout to trigger new domain search next time
+            logger.warning(f"AudiobookBay search timed out for '{query}', resetting domain selection")
+            self.current_base_url = None
+            return []
         except Exception as e:
             logger.error(f"AudiobookBay search failed for query '{query}': {e}")
             return []
@@ -214,8 +237,8 @@ class AudiobookBayClient:
             
             # Make sure we have absolute URL
             if detail_url and not detail_url.startswith('http'):
-                # Use current working domain
-                base_url = self._get_base_url(self.current_domain) if self.current_domain else self._get_base_url(self.domains[0])
+                # Use current working base URL
+                base_url = self.current_base_url if self.current_base_url else self._get_base_url_from_domain(self.domains[0])
                 detail_url = urljoin(base_url, detail_url)
             
             # Extract metadata from post content
@@ -267,12 +290,12 @@ class AudiobookBayClient:
             return None
     
     async def _get_magnet_link(self, detail_url: str) -> Optional[str]:
-        """Fetch detail page and extract magnet link"""
+        """Fetch detail page and extract torrent download link"""
         try:
             if not detail_url:
                 return None
             
-            logger.debug(f"Fetching magnet link from: {detail_url}")
+            logger.debug(f"Fetching torrent link from: {detail_url}")
             
             # Use _make_request_direct since we have a full URL
             html = await self._make_request_direct(detail_url)
@@ -282,26 +305,53 @@ class AudiobookBayClient:
             
             soup = BeautifulSoup(html, 'lxml')
             
-            # Look for magnet link
-            magnet_link = soup.find('a', href=re.compile(r'^magnet:\?'))
+            # Look for torrent download link in the table
+            # Pattern: <a href='/downld0?downfs=...'>
+            torrent_link = soup.find('a', href=re.compile(r'^/downld0\?downfs='))
             
+            if torrent_link:
+                torrent_path = torrent_link.get('href')
+                # Make absolute URL
+                base_url = self.current_base_url if self.current_base_url else self._get_base_url_from_domain(self.domains[0])
+                torrent_url = urljoin(base_url, torrent_path)
+                logger.debug(f"Found torrent download link at {detail_url}")
+                
+                # Fetch the torrent download page to get actual magnet link
+                torrent_html = await self._make_request_direct(torrent_url)
+                if torrent_html:
+                    torrent_soup = BeautifulSoup(torrent_html, 'lxml')
+                    
+                    # Look for magnet link
+                    magnet_link = torrent_soup.find('a', href=re.compile(r'^magnet:\?'))
+                    if magnet_link:
+                        magnet = magnet_link.get('href')
+                        logger.debug(f"Found magnet link from torrent page")
+                        return magnet
+                    
+                    # Alternative: look for any link containing 'magnet:'
+                    for link in torrent_soup.find_all('a', href=True):
+                        href = link.get('href', '')
+                        if href.startswith('magnet:'):
+                            logger.debug(f"Found magnet link (alternative search) from torrent page")
+                            return href
+            
+            # Fallback: try to find magnet link directly on detail page
+            magnet_link = soup.find('a', href=re.compile(r'^magnet:\?'))
             if magnet_link:
                 magnet = magnet_link.get('href')
-                logger.debug(f"Found magnet link at {detail_url}")
+                logger.debug(f"Found magnet link directly at {detail_url}")
                 return magnet
             
-            # Alternative: look for any link containing 'magnet:'
-            for link in soup.find_all('a', href=True):
-                href = link.get('href', '')
-                if href.startswith('magnet:'):
-                    logger.debug(f"Found magnet link (alternative search) at {detail_url}")
-                    return href
-            
-            logger.debug(f"No magnet link found in detail page: {detail_url}")
+            logger.debug(f"No magnet/torrent link found in detail page: {detail_url}")
             return None
             
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching torrent link from {detail_url}")
+            # Reset domain on timeout
+            self.current_base_url = None
+            return None
         except Exception as e:
-            logger.error(f"Error fetching magnet link from {detail_url}: {type(e).__name__}: {e}")
+            logger.error(f"Error fetching torrent link from {detail_url}: {type(e).__name__}: {e}")
             return None
     
     def _extract_author(self, title: str, content: str) -> str:
@@ -449,7 +499,7 @@ class AudiobookBayClient:
         return score
     
     async def test_connection(self) -> bool:
-        """Test connection to AudiobookBay (tries all domains)"""
+        """Test connection to AudiobookBay (tries all domains in parallel)"""
         if not self.enabled:
             logger.info("AudiobookBay is disabled in configuration")
             return False
@@ -457,12 +507,12 @@ class AudiobookBayClient:
         try:
             logger.debug(f"Testing connection to AudiobookBay domains: {', '.join(self.domains)}")
             
-            # Try domains with fallback
-            result = await self._try_domains("/")
+            # Try domains with parallel fallback
+            result = await self._try_domains_parallel("/")
             
             if result:
-                html, domain = result
-                logger.info(f"AudiobookBay connection test successful: {domain}")
+                html, base_url = result
+                logger.info(f"AudiobookBay connection test successful: {base_url}")
                 return True
             else:
                 logger.warning(f"AudiobookBay connection test failed: all domains unreachable")
@@ -472,8 +522,11 @@ class AudiobookBayClient:
             return False
     
     def get_active_domain(self) -> Optional[str]:
-        """Get the currently active domain (or None if not yet determined)"""
-        return self.current_domain
+        """Get the currently active base URL (or None if not yet determined)"""
+        if self.current_base_url:
+            # Extract just the domain from the full URL for display
+            return self.current_base_url.replace('https://', '').replace('http://', '')
+        return None
 
 # Singleton instance
 audiobookbay_client = AudiobookBayClient()
