@@ -176,7 +176,7 @@ class AudiobookBayClient:
             # Construct search URL - AudiobookBay uses WordPress search format
             # The search URL should be: https://domain.com/?s=query
             url_path = "/"
-            params = {'s': query}
+            params = {'s': query, 'cat': 'undefined,undefined'}
             
             logger.info(f"Searching AudiobookBay for: '{query}' (base URL: {self.current_base_url})")
             
