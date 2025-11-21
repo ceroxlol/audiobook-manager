@@ -335,8 +335,8 @@ class AudiobookBayClient:
             
             soup = BeautifulSoup(html, 'lxml')
             
-            # Look for torrent download link
-            # Pattern: <a href='/downld0?downfs=...'>
+            # Look for torrent download link in the table row
+            # Pattern: <a href='/downld0?downfs=...'>Torrent Free Downloads</a>
             torrent_link = soup.find('a', href=re.compile(r'^/downld0\?downfs='))
             
             if not torrent_link:
@@ -349,7 +349,7 @@ class AudiobookBayClient:
             torrent_url = urljoin(base_url, torrent_path)
             logger.info(f"Found torrent download URL: {torrent_url}")
             
-            # Download the .torrent file
+            # Download the .torrent file directly from this URL
             import os
             os.makedirs(save_path, exist_ok=True)
             
@@ -360,7 +360,7 @@ class AudiobookBayClient:
             
             logger.info(f"Downloading .torrent file to: {torrent_file_path}")
             
-            # Download the torrent file
+            # Download the torrent file - the /downld0?downfs=... link directly returns the .torrent file
             if not self.session:
                 async with aiohttp.ClientSession() as session:
                     torrent_content = await self._download_file_with_session(session, torrent_url)
@@ -375,7 +375,13 @@ class AudiobookBayClient:
             with open(torrent_file_path, 'wb') as f:
                 f.write(torrent_content)
             
-            logger.info(f"Successfully downloaded .torrent file: {torrent_file_path}")
+            # Verify the file was saved correctly
+            import os
+            if not os.path.exists(torrent_file_path) or not torrent_file_path.endswith('.torrent'):
+                logger.error(f"Failed to save torrent file properly: {torrent_file_path}")
+                return None
+            
+            logger.info(f"Successfully downloaded .torrent file ({len(torrent_content)} bytes): {torrent_file_path}")
             return torrent_file_path
             
         except Exception as e:
