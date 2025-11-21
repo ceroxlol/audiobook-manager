@@ -43,28 +43,26 @@ class AudiobookBayClient:
     
     async def _try_domains_parallel(self, url_path: str, params: Dict = None) -> Optional[tuple]:
         """
-        Try all domains in parallel (both HTTP and HTTPS) and return first successful response
+        Try all domains in parallel (prefer HTTP, then HTTPS) and return first successful response
         Returns tuple of (html_content, successful_base_url) or None
         """
-        # Build list of all URLs to try (both http and https for each domain)
         urls_to_try = []
-        
+
         # If we have a working base URL, try it first
         if self.current_base_url:
             urls_to_try.append((f"{self.current_base_url}{url_path}", self.current_base_url))
-        
-        # Add all domain+protocol combinations
+
+        # For each domain, try HTTP first, then HTTPS
         for domain in self.domains:
-            for protocol in ['https', 'http']:
+            for protocol in ['http', 'https']:
                 base_url = self._get_base_url_from_domain(domain, protocol)
                 full_url = f"{base_url}{url_path}"
                 # Skip if already added as current
                 if base_url != self.current_base_url:
                     urls_to_try.append((full_url, base_url))
-        
-        logger.debug(f"Testing {len(urls_to_try)} AudiobookBay URLs in parallel")
-        
-        # Create tasks for all URLs
+
+        logger.debug(f"Testing {len(urls_to_try)} AudiobookBay URLs in parallel (HTTP preferred)")
+
         async def try_url(url: str, base_url: str):
             try:
                 html = await self._make_request_direct(url, params)
@@ -73,22 +71,18 @@ class AudiobookBayClient:
             except Exception as e:
                 logger.debug(f"Failed to fetch {url}: {e}")
             return None
-        
+
         tasks = [try_url(url, base) for url, base in urls_to_try]
-        
-        # Wait for first successful response
+
         for coro in asyncio.as_completed(tasks):
             result = await coro
             if result:
                 html, successful_base_url = result
-                
-                # Update current base URL if changed
                 if self.current_base_url != successful_base_url:
                     logger.info(f"AudiobookBay: Using working URL: {successful_base_url}")
                     self.current_base_url = successful_base_url
-                
                 return result
-        
+
         logger.error(f"All AudiobookBay URLs failed. Tried {len(urls_to_try)} combinations")
         return None
     
