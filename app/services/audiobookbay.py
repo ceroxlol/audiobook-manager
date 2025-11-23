@@ -729,10 +729,6 @@ class AudiobookBayClient:
             logger.debug("No AudiobookBay credentials configured, skipping login")
             return False
         
-        if not self.current_base_url:
-            logger.warning("Cannot login: no working domain established")
-            return False
-        
         try:
             # Ensure we have a session with unsafe cookie jar to store cookies
             if not self.session:
