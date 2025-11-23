@@ -419,8 +419,14 @@ class AudiobookBayClient:
             
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             
+            # Log session cookies before request
+            if self.current_base_url:
+                cookies = session.cookie_jar.filter_cookies(self.current_base_url)
+                logger.debug(f"Making download request with {len(cookies)} cookies")
+            
             # Follow redirects and handle potential login redirects
             async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as response:
+                logger.debug(f"Download response status: {response.status}, final URL: {response.url}")
                 content = await response.read()
                 
                 # Check if we got a meta refresh redirect to login (common in AudiobookBay)
@@ -434,9 +440,15 @@ class AudiobookBayClient:
                         self.logged_in = False
                         login_success = await self._login()
                         if login_success:
+                            # Verify cookies are present after login
+                            if self.current_base_url:
+                                cookies_after_login = session.cookie_jar.filter_cookies(self.current_base_url)
+                                logger.debug(f"Cookies after login: {len(cookies_after_login)} cookies")
+                            
                             # Retry the download after login using the same session
                             logger.info("Login successful, retrying download")
                             async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as retry_response:
+                                logger.debug(f"Retry response status: {retry_response.status}, final URL: {retry_response.url}")
                                 if retry_response.status == 200:
                                     retry_content = await retry_response.read()
                                     # Verify we didn't get another login redirect
@@ -445,6 +457,11 @@ class AudiobookBayClient:
                                         return retry_content
                                     else:
                                         logger.error("Still getting login page after successful login")
+                                        logger.debug(f"Retry content preview: {retry_content[:300]}")
+                                        # Check cookies one more time
+                                        if self.current_base_url:
+                                            final_cookies = session.cookie_jar.filter_cookies(self.current_base_url)
+                                            logger.debug(f"Cookies present during retry: {len(final_cookies)} cookies")
                                         return None
                                 else:
                                     logger.error(f"Failed to download file after login: HTTP {retry_response.status}")
@@ -747,7 +764,10 @@ class AudiobookBayClient:
                         self.logged_in = False
                         return False
                     
-                    logger.info("AudiobookBay login successful - cookies stored in session")
+                    # Log cookies for debugging
+                    cookies = self.session.cookie_jar.filter_cookies(self.current_base_url)
+                    logger.info(f"AudiobookBay login successful - cookies stored: {len(cookies)} cookies")
+                    logger.debug(f"Cookie details: {[(c.key, c.value[:20] if len(c.value) > 20 else c.value) for c in cookies.values()]}")
                     self.logged_in = True
                     return True
                 else:
