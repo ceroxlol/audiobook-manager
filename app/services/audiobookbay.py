@@ -33,7 +33,9 @@ class AudiobookBayClient:
         logger.info(f"AudiobookBay client initialized with {len(self.domains)} domain(s): {', '.join(self.domains)} (timeout: {self.timeout}s, login: {'enabled' if self.username else 'disabled'})")
     
     async def __aenter__(self):
-        self.session = aiohttp.ClientSession()
+        # Use unsafe cookie jar to handle cross-domain cookies properly
+        jar = aiohttp.CookieJar(unsafe=True)
+        self.session = aiohttp.ClientSession(cookie_jar=jar)
         return self
     
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -362,7 +364,8 @@ class AudiobookBayClient:
             
             # Ensure we have a session (needed for authenticated downloads)
             if not self.session:
-                self.session = aiohttp.ClientSession()
+                jar = aiohttp.CookieJar(unsafe=True)
+                self.session = aiohttp.ClientSession(cookie_jar=jar)
             
             # If we have credentials, ensure we're logged in before downloading
             if self.username and self.password and not self.logged_in:
@@ -420,9 +423,10 @@ class AudiobookBayClient:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             
             # Log session cookies before request
-            if self.current_base_url:
-                cookies = session.cookie_jar.filter_cookies(self.current_base_url)
-                logger.debug(f"Making download request with {len(cookies)} cookies")
+            all_cookies = list(session.cookie_jar)
+            logger.debug(f"Making download request with {len(all_cookies)} total cookies in jar")
+            if all_cookies:
+                logger.debug(f"Cookies: {[(c.key, c['domain']) for c in all_cookies]}")
             
             # Follow redirects and handle potential login redirects
             async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as response:
@@ -728,21 +732,25 @@ class AudiobookBayClient:
             return False
         
         try:
-            # Ensure we have a session to store cookies
+            # Ensure we have a session with unsafe cookie jar to store cookies
             if not self.session:
-                self.session = aiohttp.ClientSession()
+                jar = aiohttp.CookieJar(unsafe=True)
+                self.session = aiohttp.ClientSession(cookie_jar=jar)
             
-            logger.info(f"Attempting to login to AudiobookBay at {self.current_base_url}")
+            # Use the actual domain from the download URL (which may be https://audiobookbay.lu)
+            # not necessarily the current_base_url
+            login_base = "https://audiobookbay.lu"  # Always use the main domain for login
+            logger.info(f"Attempting to login to AudiobookBay at {login_base}")
             
             # AudiobookBay login URL
-            login_url = f"{self.current_base_url}/member/login.php"
+            login_url = f"{login_base}/member/login.php"
             
             # Prepare login data
             login_data = {
                 'log': self.username,
                 'pwd': self.password,
                 'wp-submit': 'Log In',
-                'redirect_to': self.current_base_url,
+                'redirect_to': login_base,
                 'testcookie': '1'
             }
             
@@ -765,9 +773,12 @@ class AudiobookBayClient:
                         return False
                     
                     # Log cookies for debugging
-                    cookies = self.session.cookie_jar.filter_cookies(self.current_base_url)
-                    logger.info(f"AudiobookBay login successful - cookies stored: {len(cookies)} cookies")
-                    logger.debug(f"Cookie details: {[(c.key, c.value[:20] if len(c.value) > 20 else c.value) for c in cookies.values()]}")
+                    all_cookies = list(self.session.cookie_jar)
+                    logger.info(f"AudiobookBay login successful - total cookies in jar: {len(all_cookies)}")
+                    if all_cookies:
+                        logger.debug(f"Cookie details: {[(c.key, c['domain'], c.value[:20] if len(c.value) > 20 else c.value) for c in all_cookies]}")
+                    else:
+                        logger.warning("No cookies received after login - this will cause download failures")
                     self.logged_in = True
                     return True
                 else:
