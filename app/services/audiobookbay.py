@@ -360,15 +360,38 @@ class AudiobookBayClient:
             
             logger.info(f"Downloading .torrent file to: {torrent_file_path}")
             
-            # Download the torrent file - the /downld0?downfs=... link directly returns the .torrent file
+            # Ensure we have a session (needed for authenticated downloads)
             if not self.session:
-                async with aiohttp.ClientSession() as session:
-                    torrent_content = await self._download_file_with_session(session, torrent_url)
-            else:
-                torrent_content = await self._download_file_with_session(self.session, torrent_url)
+                self.session = aiohttp.ClientSession()
+            
+            # If we have credentials, ensure we're logged in before downloading
+            if self.username and self.password and not self.logged_in:
+                logger.info("Logging in before downloading torrent file")
+                login_success = await self._login()
+                if not login_success:
+                    logger.error("Failed to login, torrent download may fail")
+            
+            # Download the torrent file - the /downld0?downfs=... link directly returns the .torrent file
+            torrent_content = await self._download_file_with_session(self.session, torrent_url)
             
             if not torrent_content:
                 logger.error(f"Failed to download torrent file from {torrent_url}")
+                return None
+            
+            # Debug: Check what we actually downloaded
+            logger.debug(f"Downloaded content size: {len(torrent_content)} bytes")
+            logger.debug(f"Content starts with: {torrent_content[:100]}")
+            
+            # Check if it's HTML (login page or error page) instead of a torrent
+            if torrent_content.startswith(b'<!DOCTYPE') or torrent_content.startswith(b'<html'):
+                logger.error(f"Downloaded HTML instead of torrent file (likely login page or error)")
+                logger.debug(f"HTML content preview: {torrent_content[:500].decode('utf-8', errors='ignore')}")
+                return None
+            
+            # Verify it's a valid torrent file (should start with 'd' for bencoded data)
+            if not torrent_content.startswith(b'd'):
+                logger.error(f"Downloaded content is not a valid torrent file (doesn't start with 'd')")
+                logger.debug(f"Content preview: {torrent_content[:200]}")
                 return None
             
             # Save the torrent file
@@ -376,7 +399,6 @@ class AudiobookBayClient:
                 f.write(torrent_content)
             
             # Verify the file was saved correctly
-            import os
             if not os.path.exists(torrent_file_path) or not torrent_file_path.endswith('.torrent'):
                 logger.error(f"Failed to save torrent file properly: {torrent_file_path}")
                 return None
