@@ -421,35 +421,47 @@ class AudiobookBayClient:
             
             # Follow redirects and handle potential login redirects
             async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as response:
-                # Check if we were redirected to a login page
-                final_url = str(response.url)
-                if 'login' in final_url.lower() or 'member' in final_url.lower():
-                    logger.warning(f"Download URL redirected to login page: {final_url}")
+                content = await response.read()
+                
+                # Check if we got a meta refresh redirect to login (common in AudiobookBay)
+                if b'login.php' in content or b"<meta http-equiv='Refresh'" in content:
+                    logger.warning(f"Download returned login redirect page")
                     
                     # If we have credentials and aren't logged in, try to login
-                    if self.username and self.password and not self.logged_in:
-                        logger.info("Attempting to login before downloading")
+                    if self.username and self.password:
+                        logger.info("Detected login requirement, attempting to login")
+                        # Force login even if we think we're logged in (session may have expired)
+                        self.logged_in = False
                         login_success = await self._login()
                         if login_success:
-                            # Retry the download after login
+                            # Retry the download after login using the same session
+                            logger.info("Login successful, retrying download")
                             async with session.get(url, headers=headers, timeout=timeout, allow_redirects=True) as retry_response:
                                 if retry_response.status == 200:
-                                    return await retry_response.read()
+                                    retry_content = await retry_response.read()
+                                    # Verify we didn't get another login redirect
+                                    if b'login.php' not in retry_content and b"<meta http-equiv='Refresh'" not in retry_content:
+                                        logger.info("Download successful after login")
+                                        return retry_content
+                                    else:
+                                        logger.error("Still getting login page after successful login")
+                                        return None
                                 else:
                                     logger.error(f"Failed to download file after login: HTTP {retry_response.status}")
                                     return None
                         else:
-                            logger.error("Login failed, cannot download torrent file (login required)")
+                            logger.error("Login failed, cannot download torrent file")
                             return None
                     else:
-                        logger.error("Download requires login but no credentials configured or already logged in")
+                        logger.error("Download requires login but no credentials configured")
                         return None
                 
                 if response.status == 200:
-                    return await response.read()
+                    return content
                 else:
                     logger.error(f"Failed to download file: HTTP {response.status}")
                     return None
+                    
         except Exception as e:
             logger.error(f"Error downloading file from {url}: {type(e).__name__}: {e}")
             return None
@@ -699,9 +711,13 @@ class AudiobookBayClient:
             return False
         
         try:
+            # Ensure we have a session to store cookies
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
             logger.info(f"Attempting to login to AudiobookBay at {self.current_base_url}")
             
-            # AudiobookBay login URL (WordPress standard)
+            # AudiobookBay login URL
             login_url = f"{self.current_base_url}/member/login.php"
             
             # Prepare login data
@@ -721,42 +737,23 @@ class AudiobookBayClient:
             
             timeout = aiohttp.ClientTimeout(total=self.timeout)
             
-            if not self.session:
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(login_url, data=login_data, headers=headers, timeout=timeout, allow_redirects=True) as response:
-                        if response.status == 200:
-                            # Check if login was successful by looking for error messages
-                            html = await response.text()
-                            if 'login_error' in html.lower() or 'incorrect' in html.lower():
-                                logger.error("AudiobookBay login failed: incorrect username or password")
-                                self.logged_in = False
-                                return False
-                            
-                            logger.info("AudiobookBay login successful")
-                            self.logged_in = True
-                            
-                            # Note: cookies are stored in the session automatically
-                            return True
-                        else:
-                            logger.error(f"AudiobookBay login failed with status {response.status}")
-                            self.logged_in = False
-                            return False
-            else:
-                async with self.session.post(login_url, data=login_data, headers=headers, timeout=timeout, allow_redirects=True) as response:
-                    if response.status == 200:
-                        html = await response.text()
-                        if 'login_error' in html.lower() or 'incorrect' in html.lower():
-                            logger.error("AudiobookBay login failed: incorrect username or password")
-                            self.logged_in = False
-                            return False
-                        
-                        logger.info("AudiobookBay login successful")
-                        self.logged_in = True
-                        return True
-                    else:
-                        logger.error(f"AudiobookBay login failed with status {response.status}")
+            # Use self.session to preserve cookies
+            async with self.session.post(login_url, data=login_data, headers=headers, timeout=timeout, allow_redirects=True) as response:
+                if response.status == 200:
+                    # Check if login was successful by looking for error messages
+                    html = await response.text()
+                    if 'login_error' in html.lower() or 'incorrect' in html.lower():
+                        logger.error("AudiobookBay login failed: incorrect username or password")
                         self.logged_in = False
                         return False
+                    
+                    logger.info("AudiobookBay login successful - cookies stored in session")
+                    self.logged_in = True
+                    return True
+                else:
+                    logger.error(f"AudiobookBay login failed with status {response.status}")
+                    self.logged_in = False
+                    return False
                         
         except asyncio.TimeoutError:
             logger.error(f"AudiobookBay login timed out after {self.timeout}s")
