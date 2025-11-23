@@ -785,13 +785,10 @@ class AudiobookBayClient:
             except Exception as e:
                 logger.warning(f"Could not fetch login page for analysis: {e}")
             
-            # Prepare login data - try the standard WordPress login format
+            # Prepare login data - use the field names from the actual form
             login_data = {
-                'log': self.username,
-                'pwd': self.password,
-                'wp-submit': 'Log In',
-                'redirect_to': login_base,
-                'testcookie': '1'
+                'username': self.username,
+                'password': self.password,
             }
             
             headers = {
