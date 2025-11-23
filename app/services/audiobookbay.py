@@ -757,14 +757,31 @@ class AudiobookBayClient:
                     # Look for form fields in the HTML
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(login_page_html, 'html.parser')
-                    login_form = soup.find('form', {'id': 'loginform'}) or soup.find('form', {'name': 'loginform'}) or soup.find('form')
                     
-                    if login_form:
-                        # Extract all input fields to see what the form expects
-                        form_inputs = login_form.find_all('input')
-                        logger.debug(f"Found {len(form_inputs)} input fields in login form")
+                    # Find ALL forms and log them
+                    all_forms = soup.find_all('form')
+                    logger.debug(f"Found {len(all_forms)} forms on login page")
+                    
+                    for idx, form in enumerate(all_forms):
+                        form_id = form.get('id', 'no-id')
+                        form_action = form.get('action', 'no-action')
+                        form_method = form.get('method', 'GET')
+                        logger.debug(f"Form {idx}: id={form_id}, action={form_action}, method={form_method}")
+                        
+                        # Extract all input fields
+                        form_inputs = form.find_all('input')
+                        logger.debug(f"  Found {len(form_inputs)} input fields")
                         for inp in form_inputs:
-                            logger.debug(f"  Input: name={inp.get('name')}, type={inp.get('type')}, value={inp.get('value')}")
+                            logger.debug(f"    Input: name={inp.get('name')}, type={inp.get('type')}, value={inp.get('value', '')[:50]}")
+                    
+                    # Also search for password fields specifically
+                    password_fields = soup.find_all('input', {'type': 'password'})
+                    logger.debug(f"Found {len(password_fields)} password fields on page")
+                    if password_fields:
+                        for pf in password_fields:
+                            parent_form = pf.find_parent('form')
+                            if parent_form:
+                                logger.debug(f"Password field '{pf.get('name')}' is in form with action: {parent_form.get('action')}")
             except Exception as e:
                 logger.warning(f"Could not fetch login page for analysis: {e}")
             
