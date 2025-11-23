@@ -747,7 +747,32 @@ class AudiobookBayClient:
             # AudiobookBay login URL
             login_url = f"{login_base}/member/login.php"
             
-            # Prepare login data
+            # First, fetch the login page to extract any CSRF tokens or see the form structure
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            }
+            
+            try:
+                async with self.session.get(login_url, headers=headers, timeout=timeout) as get_response:
+                    login_page_html = await get_response.text()
+                    logger.debug(f"Fetched login page, length: {len(login_page_html)} chars")
+                    
+                    # Look for form fields in the HTML
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(login_page_html, 'html.parser')
+                    login_form = soup.find('form', {'id': 'loginform'}) or soup.find('form', {'name': 'loginform'}) or soup.find('form')
+                    
+                    if login_form:
+                        # Extract all input fields to see what the form expects
+                        form_inputs = login_form.find_all('input')
+                        logger.debug(f"Found {len(form_inputs)} input fields in login form")
+                        for inp in form_inputs:
+                            logger.debug(f"  Input: name={inp.get('name')}, type={inp.get('type')}, value={inp.get('value')}")
+            except Exception as e:
+                logger.warning(f"Could not fetch login page for analysis: {e}")
+            
+            # Prepare login data - try the standard WordPress login format
             login_data = {
                 'log': self.username,
                 'pwd': self.password,
@@ -759,10 +784,9 @@ class AudiobookBayClient:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                 'Content-Type': 'application/x-www-form-urlencoded',
-                'Referer': login_url
+                'Referer': login_url,
+                'Origin': login_base
             }
-            
-            timeout = aiohttp.ClientTimeout(total=self.timeout)
             
             # Use self.session to preserve cookies
             async with self.session.post(login_url, data=login_data, headers=headers, timeout=timeout, allow_redirects=True) as response:
