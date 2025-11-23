@@ -769,8 +769,21 @@ class AudiobookBayClient:
                 if response.status == 200:
                     # Check if login was successful by looking for error messages
                     html = await response.text()
+                    
+                    # Log the final URL after redirects
+                    logger.debug(f"Login final URL: {response.url}")
+                    logger.debug(f"Login response length: {len(html)} chars")
+                    logger.debug(f"Login response preview: {html[:500]}")
+                    
                     if 'login_error' in html.lower() or 'incorrect' in html.lower():
                         logger.error("AudiobookBay login failed: incorrect username or password")
+                        self.logged_in = False
+                        return False
+                    
+                    # Check if we're still on the login page (login failed)
+                    if 'login.php' in str(response.url) or 'wp-submit' in html or 'name="log"' in html.lower():
+                        logger.error("AudiobookBay login failed: still on login page after POST")
+                        logger.debug(f"Response contains login form indicators")
                         self.logged_in = False
                         return False
                     
