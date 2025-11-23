@@ -346,8 +346,8 @@ class AudiobookBayClient:
                 return None
             
             torrent_path = torrent_link.get('href')
-            # Make absolute URL
-            base_url = self.current_base_url if self.current_base_url else self._get_base_url_from_domain(self.domains[0])
+            # Make absolute URL - force HTTPS to match where cookies are set
+            base_url = "https://audiobookbay.lu"  # Always use main domain with HTTPS
             torrent_url = urljoin(base_url, torrent_path)
             logger.info(f"Found torrent download URL: {torrent_url}")
             
@@ -445,9 +445,10 @@ class AudiobookBayClient:
                         login_success = await self._login()
                         if login_success:
                             # Verify cookies are present after login
-                            if self.current_base_url:
-                                cookies_after_login = session.cookie_jar.filter_cookies(self.current_base_url)
-                                logger.debug(f"Cookies after login: {len(cookies_after_login)} cookies")
+                            all_cookies_after = list(session.cookie_jar)
+                            logger.debug(f"Cookies after login: {len(all_cookies_after)} total cookies")
+                            if all_cookies_after:
+                                logger.debug(f"Cookie details after login: {[(c.key, c['domain']) for c in all_cookies_after]}")
                             
                             # Retry the download after login using the same session
                             logger.info("Login successful, retrying download")
@@ -463,9 +464,10 @@ class AudiobookBayClient:
                                         logger.error("Still getting login page after successful login")
                                         logger.debug(f"Retry content preview: {retry_content[:300]}")
                                         # Check cookies one more time
-                                        if self.current_base_url:
-                                            final_cookies = session.cookie_jar.filter_cookies(self.current_base_url)
-                                            logger.debug(f"Cookies present during retry: {len(final_cookies)} cookies")
+                                        final_cookies_all = list(session.cookie_jar)
+                                        logger.debug(f"Cookies present during retry: {len(final_cookies_all)} total cookies")
+                                        if final_cookies_all:
+                                            logger.debug(f"Cookie details: {[(c.key, c['domain']) for c in final_cookies_all]}")
                                         return None
                                 else:
                                     logger.error(f"Failed to download file after login: HTTP {retry_response.status}")
